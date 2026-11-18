@@ -1,0 +1,11 @@
+# Large source data is too big for GitHub. See the README to rebuild public/data.
+raw-data/GEDEvent_*.csv
+raw-data/PRISMA_SR_50M/
+# Local ArcGIS Pro project used for exploring the data.
+gis/
+
+node_modules/
+dist/
+*.log
+.DS_Store
+__pycache__/
