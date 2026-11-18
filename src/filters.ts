@@ -10,7 +10,7 @@ export interface LocationFilter {
   name: string;
 }
 
-/** An actor or conflict, or every one when `id` is -1. */
+/** A conflict, or every one when `id` is -1. */
 export interface ListFilter {
   id: number;
   name: string;

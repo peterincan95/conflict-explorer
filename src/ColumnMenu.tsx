@@ -49,6 +49,8 @@ interface ColumnMenuProps<T> {
   onSelect: (value: T) => void;
   /** The number shown beside an item, and sorted by. Only called while the menu is open. */
   countOf: (value: T) => number;
+  /** A low and high count to show in place of the count, if given. Items still sort by `countOf`. */
+  rangeOf?: ((value: T) => readonly [number, number]) | undefined;
   /** Whether an item would show anything. Items that wouldn't are hidden, unless selected. */
   hasEntries: (value: T) => boolean;
   /** Columns whose order sorting wouldn't change, so they get no sort buttons. */
@@ -163,6 +165,7 @@ export function ColumnMenu<T>({
   selectedName,
   onSelect,
   countOf,
+  rangeOf,
   hasEntries,
   unsortedColumns = [],
   isActive = false,
@@ -400,11 +403,17 @@ export function ColumnMenu<T>({
 
   const optionClass = (state?: string) => (state ? `menu-option ${state}` : "menu-option");
 
+  const countText = (value: T) => {
+    if (!rangeOf) return formatCount(countOf(value));
+    const [low, high] = rangeOf(value);
+    return low === high ? formatCount(low) : `${formatCount(low)}–${formatCount(high)}`;
+  };
+
   const itemName = ({ name, value }: MenuItem<T>) => (
     <span>
       {name}
       {value !== undefined && (
-        <span className="menu-count"> ({formatCount(countOf(value))})</span>
+        <span className="menu-count"> ({countText(value)})</span>
       )}
     </span>
   );

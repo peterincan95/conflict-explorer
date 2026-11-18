@@ -1,4 +1,4 @@
-import { BYTES_PER_EVENT, type EventData, type Meta } from "./data";
+import { BYTES_PER_EVENT, VIOLENCE_TYPES, type EventData, type Meta, type ViolenceType } from "./data";
 import { GRID_MAX, type Area, type DayWindow } from "./selection";
 
 /** The map's view: `x` and `y` are the share of the world at the panel's center. */
@@ -51,6 +51,17 @@ interface Targets {
 // Point colors from the sparsest to the densest areas, evenly spaced after black, which
 // keeps empty areas matching the background.
 export const DEFAULT_GRADIENT = ["#893426", "#e67f0e", "#faba58", "#fff3da"];
+
+/** Point colors by type of violence: state-based, non-state and one-sided. */
+export const TYPE_COLORS: Record<ViolenceType, string> = {
+  1: "#3d8bff",
+  2: "#2fc46a",
+  3: "#ff5ca8",
+};
+// In type colors, points reach their full color at this brightness, then whiten
+// toward the brightest by up to this share.
+const TYPE_FULL_LIGHT = 0.6;
+const TYPE_WHITENING = 0.6;
 const GRADIENT_START = "#000000";
 
 const gradientStops = (colors: readonly string[]) => [GRADIENT_START, ...colors];
@@ -63,10 +74,13 @@ const MAP_FILL = 0.96;
 
 // Width in CSS pixels of an event with no recorded deaths. Sizes between whole pixels
 // are drawn by lighting the edge pixels by how much of them the point covers.
-const POINT_SIZE = 1.7;
+const POINT_SIZE = 1.3;
 // A point's width grows with the square root of its deaths, so its area grows with
-// the deaths: this much of the base width for each step of the square root.
-const SIZE_PER_ROOT = 0.3;
+// the deaths: this many CSS pixels for each step of the square root.
+const SIZE_PER_ROOT = 0.51;
+// Brightness is set as if the smallest points were this wide, so shrinking them
+// makes them denser, not dimmer, and larger points keep their brightness.
+const LIGHT_BASE_SIZE = 1.7;
 // The widest a point gets, in CSS pixels at the home view.
 const MAX_POINT_SIZE = 64;
 // Bigger points spread their light thinner, so a large event reads as a soft disc
@@ -80,6 +94,17 @@ const ROUND_POINT_SIZES = [3, 5];
 export const MAP_MAX_ZOOM = 64;
 // Points grow with zoom, reaching this multiple of their size at the closest zoom.
 const MAX_ZOOM_GROWTH = 3.46;
+
+/** How much points have grown at a zoom. */
+const zoomGrowth = (zoom: number) =>
+  Math.min(zoom ** (Math.log(MAX_ZOOM_GROWTH) / Math.log(MAP_MAX_ZOOM)), MAX_ZOOM_GROWTH);
+
+/** An event's width on screen in CSS pixels, at a zoom. */
+export function pointWidth(deaths: number, zoom: number) {
+  const growth = zoomGrowth(zoom);
+  return Math.min((POINT_SIZE + SIZE_PER_ROOT * Math.sqrt(deaths)) * growth, MAX_POINT_SIZE * growth);
+}
+
 // Added to a point's brightness for each doubling of zoom.
 const MAP_ZOOM_BRIGHTNESS = 0.9;
 
@@ -107,10 +132,13 @@ uniform vec2 u_offset;
 uniform vec2 u_window;
 uniform vec4 u_area;
 uniform float u_pointSize;
+uniform float u_rootSize;
+uniform float u_lightSize;
 uniform float u_maxSize;
 flat out float v_size;
 flat out float v_light;
 flat out float v_unselected;
+flat out vec2 v_type;
 void main() {
   // Filtered out, or outside the dates: outside the clip volume, so never drawn.
   if (a_visible < 0.5 || a_days.x >= u_window.y || a_days.y < u_window.x) {
@@ -119,10 +147,12 @@ void main() {
     return;
   }
   bool outsideArea = any(lessThan(a_position, u_area.xy)) || any(greaterThan(a_position, u_area.zw));
-  float size = min(u_pointSize * (1.0 + ${SIZE_PER_ROOT} * sqrt(a_best)), u_maxSize);
+  float size = min(u_pointSize + u_rootSize * sqrt(a_best), u_maxSize);
   v_size = size;
-  v_light = pow(u_pointSize / size, ${LIGHT_SPREAD}) * (outsideArea ? ${UNSELECTED_WEIGHT} : 1.0);
+  v_light = pow(u_lightSize / size, ${LIGHT_SPREAD}) * (outsideArea ? ${UNSELECTED_WEIGHT} : 1.0);
   v_unselected = outsideArea ? 1.0 : 0.0;
+  // a_visible holds the type of violence: 1 state-based, 2 non-state, 3 one-sided.
+  v_type = vec2(a_visible > 1.5 && a_visible < 2.5 ? 1.0 : 0.0, a_visible > 2.5 ? 1.0 : 0.0);
   // A pixel wider than the point, so pixels it only partly covers are drawn too.
   gl_PointSize = ceil(size) + 1.0;
   gl_Position = vec4(a_position * u_scale + u_offset, 0.0, 1.0);
@@ -135,6 +165,7 @@ uniform vec2 u_roundSizes;
 flat in float v_size;
 flat in float v_light;
 flat in float v_unselected;
+flat in vec2 v_type;
 out vec4 color;
 void main() {
   // This pixel's offset from the point's center, in pixels.
@@ -151,9 +182,10 @@ void main() {
   float edge = clamp(distance / max(half_size, 1e-3), 0.0, 1.0);
   float soften = 1.0 - ${EDGE_SOFTNESS} * smoothstep(u_roundSizes.y, u_roundSizes.y * 4.0, v_size) * edge * edge;
   float coverage = mix(square, circle * soften, roundness);
-  // Density in red, and the density of events outside the box in alpha.
+  // Density in red, the density of non-state and one-sided events in green and blue,
+  // and the density of events outside the box in alpha.
   float weight = u_weight * coverage * v_light;
-  color = vec4(weight, 0.0, 0.0, weight * v_unselected);
+  color = vec4(weight, weight * v_type, weight * v_unselected);
 }`;
 
 const LINE_VERTEX = `#version 300 es
@@ -233,6 +265,8 @@ uniform sampler2D u_outlines;
 uniform float u_nearGlow;
 uniform float u_farGlow;
 uniform float u_outsideDesaturation;
+uniform float u_colorByType;
+uniform vec3 u_typeColors[3];
 out vec4 color;
 ${TONE}
 const int STOP_COUNT = ${DEFAULT_GRADIENT.length + 1};
@@ -252,6 +286,15 @@ void main() {
   float light = 1.0 - (1.0 - core.r) * (1.0 - nearLight) * (1.0 - farLight);
   light += (noise(gl_FragCoord.xy) - 0.5) / 255.0;
   vec3 rgb = gradient(light);
+  if (u_colorByType > 0.5) {
+    // Each type's share of the light, from the density channels.
+    vec3 sum = core.rgb + near.rgb + far.rgb;
+    vec2 shares = clamp(sum.gb / max(sum.r, 1e-6), 0.0, 1.0);
+    float state = max(1.0 - shares.x - shares.y, 0.0);
+    vec3 hue = state * u_typeColors[0] + shares.x * u_typeColors[1] + shares.y * u_typeColors[2];
+    rgb = hue * min(light / ${TYPE_FULL_LIGHT}, 1.0);
+    rgb = mix(rgb, vec3(1.0), smoothstep(${TYPE_FULL_LIGHT}, 1.0, light) * ${TYPE_WHITENING});
+  }
   // Grays by the share of the light that comes from events outside the box.
   float outside = (core.a + near.a + far.a) / max(core.r + near.r + far.r, 1e-6);
   float gray = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
@@ -351,6 +394,10 @@ export class EventRenderer {
   private outlines: Uint16Array | null = null;
   private outlineLines: OutlineLines | null = null;
   private gradient = new Float32Array(gradientStops(DEFAULT_GRADIENT).flatMap(hexChannels));
+  private typeColors = new Float32Array(VIOLENCE_TYPES.flatMap((type) => hexChannels(TYPE_COLORS[type])));
+  private colorByType = false;
+  /** What the GPU gets for each event: its type of violence if it passes the filters, else 0. */
+  private visibleTypes: Uint8Array;
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -366,6 +413,7 @@ export class EventRenderer {
     if (!gl) throw new Error(errors.noWebGl);
     this.gl = gl;
     this.visible = new Uint8Array(data.meta.count);
+    this.visibleTypes = new Uint8Array(data.meta.count);
 
     canvas.addEventListener("webglcontextlost", this.onContextLost);
     canvas.addEventListener("webglcontextrestored", this.onContextRestored);
@@ -395,7 +443,16 @@ export class EventRenderer {
   /** Which events pass the filters, as 1 or 0 per event. */
   setVisible(visible: Uint8Array) {
     this.visible = visible;
+    const { type } = this.data.attrs;
+    const types = this.visibleTypes;
+    for (let index = 0; index < visible.length; index += 1) types[index] = visible[index] ? type[index]! : 0;
     this.uploadVisible();
+    this.requestDraw();
+  }
+
+  /** Colors points by type of violence instead of by brightness. */
+  setColorByType(isOn: boolean) {
+    this.colorByType = isOn;
     this.requestDraw();
   }
 
@@ -481,6 +538,8 @@ export class EventRenderer {
         "u_window",
         "u_area",
         "u_pointSize",
+        "u_rootSize",
+        "u_lightSize",
         "u_maxSize",
         "u_weight",
         "u_roundSizes",
@@ -500,6 +559,8 @@ export class EventRenderer {
         "u_stops",
         "u_outsideDesaturation",
         "u_outlines",
+        "u_colorByType",
+        "u_typeColors",
       ]),
       lines: createProgram(gl, LINE_VERTEX, LINE_FRAGMENT, ["u_scale", "u_offset", "u_brightness"]),
       pointsVao,
@@ -525,7 +586,7 @@ export class EventRenderer {
     const { gl, resources } = this;
     if (!resources) return;
     gl.bindBuffer(gl.ARRAY_BUFFER, resources.visibleBuffer);
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.visible);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.visibleTypes);
   }
 
   private createTargets() {
@@ -574,9 +635,10 @@ export class EventRenderer {
 
     const { zoom, x, y } = this.camera;
     const fill = mapFill(this.data.meta.extent, this.width, this.height);
-    const growth = Math.min(zoom ** (Math.log(MAX_ZOOM_GROWTH) / Math.log(MAP_MAX_ZOOM)), MAX_ZOOM_GROWTH);
+    const growth = zoomGrowth(zoom);
     const pointSize = Math.max(0.5, POINT_SIZE * growth * pixelRatio);
-    const baseWeight = this.pointWeight(pointSize, fill[0] * fill[1] * zoom ** 2);
+    const lightSize = Math.max(0.5, LIGHT_BASE_SIZE * growth * pixelRatio);
+    const baseWeight = this.pointWeight(lightSize, fill[0] * fill[1] * zoom ** 2);
     // Crowded views get less of the zoom boost, so dense areas don't merge into a haze.
     const roominess = Math.sqrt(baseWeight / POINT_WEIGHT);
     const weight = baseWeight * (1 + MAP_ZOOM_BRIGHTNESS * Math.log2(zoom) * roominess) * DEFAULT_BRIGHTNESS;
@@ -596,6 +658,8 @@ export class EventRenderer {
       (north + 0.5) / GRID_MAX,
     );
     gl.uniform1f(uniforms.u_pointSize!, pointSize);
+    gl.uniform1f(uniforms.u_rootSize!, SIZE_PER_ROOT * growth * pixelRatio);
+    gl.uniform1f(uniforms.u_lightSize!, lightSize);
     gl.uniform1f(
       uniforms.u_maxSize!,
       Math.min(MAX_POINT_SIZE * growth * pixelRatio, this.maxPointSize - 1),
@@ -686,6 +750,8 @@ export class EventRenderer {
     gl.uniform1f(composite.uniforms.u_farGlow!, FAR_GLOW);
     gl.uniform3fv(composite.uniforms.u_stops!, this.gradient);
     gl.uniform1f(composite.uniforms.u_outsideDesaturation!, UNSELECTED_DESATURATION);
+    gl.uniform1f(composite.uniforms.u_colorByType!, this.colorByType ? 1 : 0);
+    gl.uniform3fv(composite.uniforms.u_typeColors!, this.typeColors);
     pass(null);
     gl.activeTexture(gl.TEXTURE0);
   }

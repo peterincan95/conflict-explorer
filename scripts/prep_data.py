@@ -2,7 +2,8 @@
 
 Reads   raw-data/GEDEvent_v26_1.csv          (final data, 1989-2025)
         raw-data/GEDEvent_v26_01_26_09.csv   (provisional candidate data, 2026)
-Writes  public/data/events.bin, public/data/attrs.bin, public/data/meta.json
+Writes  public/data/events.bin, public/data/attrs.bin, public/data/details.bin,
+        public/data/places.json, public/data/meta.json
 
 events.bin holds 12 bytes per event, little-endian, for the GPU:
   uint16 x       Equal Earth x, scaled from -xMax..xMax to 0..65535
@@ -19,6 +20,12 @@ attrs.bin holds one array after another, in the same event order, for filtering:
   uint16 sideB[count]     actor id of side B
   uint8  country[count]   country id
   uint8  flags[count]     bit 0: provisional (from the candidate dataset)
+  uint8  type[count]      type of violence: 1 state-based, 2 non-state, 3 one-sided
+
+details.bin holds what only the summary and totals need, in the same order:
+  uint32 low[count]       UCDP's low estimate of deaths, at most the best
+  uint32 high[count]      UCDP's high estimate of deaths, at least the best
+  uint32 place[count]     index into places.json, the event's place name
 
 Events are sorted by start day. Ids index the lists in meta.json; division
 id 0 is a placeholder for "none".
@@ -39,7 +46,8 @@ SOURCES = [
 ]
 COLUMNS = [
     "id", "conflict_name", "side_a", "side_b", "adm_1", "adm_2", "country", "region",
-    "latitude", "longitude", "date_start", "date_end", "best",
+    "latitude", "longitude", "date_start", "date_end", "best", "low", "high", "type_of_violence",
+    "where_coordinates",
 ]
 EPOCH = pd.Timestamp("1989-01-01")
 PROVISIONAL = 1
@@ -152,7 +160,19 @@ def main():
         events["side_b"].map(actor_lookup).to_numpy("<u2").tobytes(),
         events["country_id"].to_numpy("<u1").tobytes(),
         events["flags"].to_numpy("<u1").tobytes(),
+        events["type_of_violence"].to_numpy("<u1").tobytes(),
     ])
+    # Some events have a low above the best, or a high below it. Widening the range
+    # to take in the best estimate keeps every range around it.
+    out_of_order = int(((events["low"] > events["best"]) | (events["high"] < events["best"])).sum())
+    events["low"] = np.minimum(events["low"], events["best"])
+    events["high"] = np.maximum(events["high"], events["best"])
+    if not events["type_of_violence"].isin([1, 2, 3]).all():
+        raise ValueError("An event has an unknown type of violence")
+    place_ids, places = ids_for(events["where_coordinates"].fillna("").str.strip())
+    details = (events["low"].to_numpy("<u4").tobytes()
+               + events["high"].to_numpy("<u4").tobytes()
+               + place_ids.to_numpy("<u4").tobytes())
 
     last_day = EPOCH + pd.Timedelta(days=int(events["end"].max()))
     meta = {
@@ -183,12 +203,16 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     records.tofile(OUT / "events.bin")
     (OUT / "attrs.bin").write_bytes(attrs)
+    (OUT / "details.bin").write_bytes(details)
+    (OUT / "places.json").write_text(json.dumps(places, separators=(",", ":"), ensure_ascii=False),
+                                     encoding="utf-8")
     (OUT / "meta.json").write_text(json.dumps(meta, separators=(",", ":"), ensure_ascii=False),
                                    encoding="utf-8")
     provisional = int((events["flags"] & PROVISIONAL).astype(bool).sum())
     print(f"{count:,} events ({provisional:,} provisional), {len(countries)} countries, "
           f"{len(adm1_keys):,} adm_1, {len(adm2_keys):,} adm_2, {len(actors):,} actors, "
-          f"{len(conflicts):,} conflicts, days {events['start'].min()}-{events['end'].max()}")
+          f"{len(conflicts):,} conflicts, days {events['start'].min()}-{events['end'].max()}, "
+          f"{out_of_order:,} ranges widened to take in the best estimate")
 
 
 if __name__ == "__main__":
