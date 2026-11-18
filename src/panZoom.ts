@@ -8,6 +8,8 @@ const PAN_MARGIN = 0.12;
 const WHEEL_SPEED = 0.002;
 const PINCH_WHEEL_SPEED = 0.012;
 const LINE_HEIGHT_PIXELS = 16;
+// How long the camera takes to fly to a new view.
+const FLIGHT_MS = 700;
 
 interface Pointer {
   x: number;
@@ -32,6 +34,7 @@ export class PanZoom {
   private isEnabled = true;
   private isLocked = false;
   private pointers = new Map<number, Pointer>();
+  private flight = 0;
 
   /** `yDirection` is 1 if the data's y runs down the plot, and -1 if it runs up. */
   constructor(
@@ -48,6 +51,7 @@ export class PanZoom {
   }
 
   destroy() {
+    cancelAnimationFrame(this.flight);
     this.plot.removeEventListener("wheel", this.onWheel);
     this.plot.removeEventListener("pointerdown", this.onPointerDown);
     this.plot.removeEventListener("pointermove", this.onPointerMove);
@@ -78,7 +82,41 @@ export class PanZoom {
   }
 
   reset() {
+    this.stopFlight();
     this.moveTo(HOME);
+  }
+
+  /** Eases the camera to a view. Zoom changes evenly in scale, so the move feels steady. */
+  flyTo(target: Camera) {
+    this.stopFlight();
+    const end = this.limited({ ...target, zoom: clamp(target.zoom, 1, this.maxZoom) });
+    const start = this.camera;
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      this.moveTo(end);
+      return;
+    }
+    const began = performance.now();
+    const logStart = Math.log(start.zoom);
+    const logEnd = Math.log(end.zoom);
+    const step = (now: number) => {
+      const t = Math.min(1, (now - began) / FLIGHT_MS);
+      const eased = t < 0.5 ? 4 * t ** 3 : 1 - (-2 * t + 2) ** 3 / 2;
+      const zoom = Math.exp(logStart + (logEnd - logStart) * eased);
+      // The center moves at the same pace across the screen at every zoom.
+      const along = logEnd === logStart ? eased : (1 / start.zoom - 1 / zoom) / (1 / start.zoom - 1 / end.zoom);
+      this.moveTo({
+        zoom,
+        x: start.x + (end.x - start.x) * along,
+        y: start.y + (end.y - start.y) * along,
+      });
+      this.flight = t < 1 ? requestAnimationFrame(step) : 0;
+    };
+    this.flight = requestAnimationFrame(step);
+  }
+
+  private stopFlight() {
+    cancelAnimationFrame(this.flight);
+    this.flight = 0;
   }
 
   /** The share of the data under a share of the plot's width. */
@@ -129,6 +167,7 @@ export class PanZoom {
   private onWheel = (event: WheelEvent) => {
     if (this.isLocked) return;
     event.preventDefault();
+    this.stopFlight();
     const pixels = event.deltaMode === WheelEvent.DOM_DELTA_LINE
       ? event.deltaY * LINE_HEIGHT_PIXELS
       : event.deltaY;
@@ -144,6 +183,7 @@ export class PanZoom {
     const { clientX: x, clientY: y } = event;
     if (x < left || x > right || y < top || y > bottom) return;
     event.preventDefault();
+    this.stopFlight();
     this.plot.setPointerCapture(event.pointerId);
     this.pointers.set(event.pointerId, { x, y });
     this.plot.classList.add("panning");

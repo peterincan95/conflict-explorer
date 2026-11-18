@@ -1,13 +1,39 @@
 /** Bytes per event in events.bin, as written by scripts/prep_data.py. */
 export const BYTES_PER_EVENT = 12;
-// attrs.bin: five uint16 arrays, then two uint8 arrays.
-const ATTR_BYTES_PER_EVENT = 12;
+// attrs.bin: five uint16 arrays, then three uint8 arrays.
+const ATTR_BYTES_PER_EVENT = 13;
 
 export const PROVISIONAL_FLAG = 1;
+
+/** UCDP's types of violence, by their code in the data. */
+export const VIOLENCE_TYPES = [1, 2, 3] as const;
+export type ViolenceType = (typeof VIOLENCE_TYPES)[number];
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 export const monthName = (month: number) => MONTH_NAMES[month - 1]!;
+
+const MS_PER_DAY = 86_400_000;
+
+const dateOf = (epoch: string, day: number) =>
+  new Date(Date.parse(`${epoch}T00:00:00Z`) + day * MS_PER_DAY);
+
+/**
+ * Days from the epoch, first to last, as "Dec 10, 2022", "Dec 10–14, 2022",
+ * "Nov 28 – Dec 2, 2022" or "Dec 30, 2022 – Jan 2, 2023", sharing what they can.
+ */
+export function formatDays(epoch: string, first: number, last: number) {
+  const parts = (day: number) => {
+    const date = dateOf(epoch, day);
+    return [monthName(date.getUTCMonth() + 1), date.getUTCDate(), date.getUTCFullYear()] as const;
+  };
+  const [monthA, dayA, yearA] = parts(first);
+  const [monthB, dayB, yearB] = parts(last);
+  if (first === last) return `${monthA} ${dayA}, ${yearA}`;
+  if (yearA !== yearB) return `${monthA} ${dayA}, ${yearA} – ${monthB} ${dayB}, ${yearB}`;
+  if (monthA !== monthB) return `${monthA} ${dayA} – ${monthB} ${dayB}, ${yearB}`;
+  return `${monthA} ${dayA}–${dayB}, ${yearB}`;
+}
 
 export interface Month {
   /** Days from the epoch to the month's first day. */
@@ -42,6 +68,8 @@ export interface Attributes {
   sideB: Uint16Array;
   country: Uint8Array;
   flags: Uint8Array;
+  /** Type of violence: 1 state-based, 2 non-state, 3 one-sided. */
+  type: Uint8Array;
 }
 
 export interface EventData {
@@ -128,6 +156,7 @@ export async function loadEvents(onProgress: (fraction: number) => void): Promis
     sideB: u16(4),
     country: new Uint8Array(buffer, count * 10, count),
     flags: new Uint8Array(buffer, count * 11, count),
+    type: new Uint8Array(buffer, count * 12, count),
   };
   return { meta, buffer: events.buffer, ...splitRecords(events.buffer, count), attrs };
 }
@@ -135,6 +164,25 @@ export async function loadEvents(onProgress: (fraction: number) => void): Promis
 /** Country outlines as segment endpoints on the events' grid. Loaded after the events, since the map works without them. */
 export async function loadOutlines(): Promise<Uint16Array> {
   return new Uint16Array(await (await fetchOk("outlines.bin")).arrayBuffer());
+}
+
+/** Each event's low and high death estimates and place name, which only totals and the list need. */
+export interface Details {
+  low: Uint32Array;
+  high: Uint32Array;
+  place: Uint32Array;
+  places: string[];
+}
+
+/** Loaded after the events, since the map works without them. */
+export async function loadDetails(count: number): Promise<Details> {
+  const [buffer, places] = await Promise.all([
+    fetchOk("details.bin").then((response) => response.arrayBuffer()),
+    fetchOk("places.json").then((response) => response.json() as Promise<string[]>),
+  ]);
+  if (buffer.byteLength !== count * 12) throw new Error("details.bin doesn't match meta.json");
+  const u32 = (index: number) => new Uint32Array(buffer, index * count * 4, count);
+  return { low: u32(0), high: u32(1), place: u32(2), places };
 }
 
 /** A country's label spot on the events' grid. */

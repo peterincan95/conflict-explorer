@@ -1,7 +1,7 @@
 import type { Box } from "./box";
 import type { CountryLabel, Meta } from "./data";
-import { isHome, PanZoom } from "./panZoom";
-import { MAP_MAX_ZOOM, mapFill, type EventRenderer } from "./renderer";
+import { HOME, isHome, PanZoom } from "./panZoom";
+import { MAP_MAX_ZOOM, mapFill, pointWidth, type EventRenderer } from "./renderer";
 import { GRID_MAX, WHOLE_WORLD, type Area } from "./selection";
 
 const MAX_PIXEL_RATIO = 2;
@@ -17,6 +17,23 @@ const LABEL_COLOR = "#c8c8c8";
 const LABEL_HALO = "rgb(0 0 0 / 85%)";
 const LABEL_HALF_HEIGHT = 7;
 const LABEL_GAP = 6;
+
+// Fitting the map to an area leaves this share of the view around it, and stops
+// at this zoom so a single town keeps some of its surroundings.
+const FIT_PADDING = 1.25;
+const MAX_FIT_ZOOM = 24;
+// Picking an event flies at least this close to it.
+const FOCUS_ZOOM = 16;
+const HIGHLIGHT_RING = "#fff";
+const HIGHLIGHT_HALO = "rgb(0 0 0 / 70%)";
+const HIGHLIGHT_GAP = 4;
+
+/** An event to ring on the map, in grid units. */
+export interface Highlight {
+  x: number;
+  y: number;
+  deaths: number;
+}
 
 interface ScreenBox {
   left: number;
@@ -54,6 +71,8 @@ export class MapView {
   /** Each label's width, measured once the font has loaded. */
   private labelWidths: number[] = [];
   private showLabels = true;
+  private highlight: Highlight | null = null;
+  private zoomListeners = new Set<(zoom: number) => void>();
 
   constructor(
     plot: HTMLElement,
@@ -67,12 +86,25 @@ export class MapView {
       renderer.setCamera(camera);
       this.requestDraw();
       onMovedChange(!isHome(camera));
+      this.zoomListeners.forEach((listener) => listener(camera.zoom));
     });
     // Label widths depend on the web font.
     void document.fonts.ready.then(() => {
       this.measureLabels();
       this.requestDraw();
     });
+  }
+
+  get zoom() {
+    return this.view.camera.zoom;
+  }
+
+  /** Calls `listener` with each new zoom. Returns a function that stops it. */
+  onZoom(listener: (zoom: number) => void) {
+    this.zoomListeners.add(listener);
+    return () => {
+      this.zoomListeners.delete(listener);
+    };
   }
 
   setLabels(labels: CountryLabel[]) {
@@ -119,6 +151,51 @@ export class MapView {
 
   resetView() {
     this.view.reset();
+  }
+
+  /** Flies to show an area, in grid units, or back to the whole map. */
+  fitTo(area: Area | null) {
+    if (!area) {
+      this.view.flyTo(HOME);
+      return;
+    }
+    const { fill } = this;
+    const spanX = Math.max(area.east - area.west, 1) / GRID_MAX;
+    const spanY = Math.max(area.north - area.south, 1) / GRID_MAX;
+    const zoom = Math.min(1 / (fill[0] * spanX * FIT_PADDING), 1 / (fill[1] * spanY * FIT_PADDING));
+    this.view.flyTo({
+      zoom: clamp(zoom, 1, MAX_FIT_ZOOM),
+      x: (area.west + area.east) / 2 / GRID_MAX,
+      y: (area.south + area.north) / 2 / GRID_MAX,
+    });
+  }
+
+  /** Flies to center a spot, in grid units, zooming in if the map is far out. */
+  focusOn(x: number, y: number) {
+    this.view.flyTo({
+      zoom: Math.max(this.view.camera.zoom, FOCUS_ZOOM),
+      x: x / GRID_MAX,
+      y: y / GRID_MAX,
+    });
+  }
+
+  setHighlight(highlight: Highlight | null) {
+    this.highlight = highlight;
+    this.requestDraw();
+  }
+
+  private drawHighlight(toScreenX: (x: number) => number, toScreenY: (y: number) => number, zoom: number) {
+    const { highlight, context } = this;
+    if (!highlight) return;
+    const radius = pointWidth(highlight.deaths, zoom) / 2 + HIGHLIGHT_GAP;
+    context.beginPath();
+    context.arc(toScreenX(highlight.x / GRID_MAX), toScreenY(highlight.y / GRID_MAX), radius, 0, Math.PI * 2);
+    context.lineWidth = 4;
+    context.strokeStyle = HIGHLIGHT_HALO;
+    context.stroke();
+    context.lineWidth = 1.5;
+    context.strokeStyle = HIGHLIGHT_RING;
+    context.stroke();
   }
 
   /** Most important first, skipping any label that would overlap one already placed. */
@@ -187,6 +264,7 @@ export class MapView {
       const webZoom = Math.log2((width * fill[0] * camera.zoom) / WEB_TILE_PIXELS);
       this.drawLabels(toScreenX, toScreenY, webZoom + LABEL_ZOOM_BIAS);
     }
+    this.drawHighlight(toScreenX, toScreenY, camera.zoom);
     if (area === WHOLE_WORLD) return;
 
     const left = toScreenX(area.west / GRID_MAX);
