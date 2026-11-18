@@ -107,22 +107,46 @@ export function monthOfDay({ months }: EventData["meta"]) {
   return days;
 }
 
-/** Filtered events inside the box in each month. An event counts in every month it runs through. */
-export function countByMonth(
+/**
+ * Deaths among the filtered events inside the box, by month. An event that runs
+ * through several months has its deaths shared among them by how many of its days
+ * fall in each.
+ */
+export function fatalitiesByMonth(
   data: EventData,
   visible: Uint8Array,
   area: Area,
   monthOf: Uint16Array,
 ) {
-  const { start, end } = data;
-  const counts = new Uint32Array(data.meta.months.length - 1);
+  const { start, end, best } = data;
+  const { months } = data.meta;
+  const totals = new Float64Array(months.length - 1);
   const inArea = areaTest(data, area);
   for (let index = 0; index < visible.length; index += 1) {
-    if (!visible[index] || !inArea(index)) continue;
-    const last = monthOf[end[index]!]!;
-    for (let month = monthOf[start[index]!]!; month <= last; month += 1) counts[month]! += 1;
+    const deaths = best[index]!;
+    if (!visible[index] || deaths === 0 || !inArea(index)) continue;
+    const first = start[index]!;
+    const last = end[index]!;
+    const firstMonth = monthOf[first]!;
+    const lastMonth = monthOf[last]!;
+    if (firstMonth === lastMonth) {
+      totals[firstMonth]! += deaths;
+      continue;
+    }
+    const perDay = deaths / (last - first + 1);
+    for (let month = firstMonth; month <= lastMonth; month += 1) {
+      const from = Math.max(first, months[month]!.day);
+      const to = Math.min(last + 1, months[month + 1]!.day);
+      totals[month]! += perDay * (to - from);
+    }
   }
-  return counts;
+  return totals;
+}
+
+/** What a menu item would show: how many events, and their deaths. */
+export interface MenuCounts<T> {
+  events: (value: T) => number;
+  fatalities: (value: T) => number;
 }
 
 /** Runs `add` for each event in the dates and box that passes every test. */
@@ -140,53 +164,95 @@ function eachEvent(
   }
 }
 
-/** How many events each location menu item would show, given the other filters. */
-export function countLocations(data: EventData, filters: Filters, area: Area, window: DayWindow) {
-  const { meta, attrs } = data;
-  const regions = new Uint32Array(meta.regions.length);
-  const countries = new Uint32Array(meta.countries.length);
-  const adm1 = new Uint32Array(meta.adm1.length);
-  const adm2 = new Uint32Array(meta.adm2.length);
+/** Event and death tallies, one slot per id, plus a total. */
+class Tally {
+  events: Uint32Array;
+  fatalities: Float64Array;
+  totalEvents = 0;
+  totalFatalities = 0;
+
+  constructor(size: number) {
+    this.events = new Uint32Array(size);
+    this.fatalities = new Float64Array(size);
+  }
+
+  add(id: number, deaths: number) {
+    this.events[id]! += 1;
+    this.fatalities[id]! += deaths;
+  }
+
+  addTotal(deaths: number) {
+    this.totalEvents += 1;
+    this.totalFatalities += deaths;
+  }
+}
+
+/** What each location menu item would show, given the other filters. */
+export function countLocations(
+  data: EventData,
+  filters: Filters,
+  area: Area,
+  window: DayWindow,
+): MenuCounts<LocationFilter> {
+  const { meta, attrs, best } = data;
+  const tallies = {
+    region: new Tally(meta.regions.length),
+    country: new Tally(meta.countries.length),
+    adm1: new Tally(meta.adm1.length),
+    adm2: new Tally(meta.adm2.length),
+  };
   const regionOf = meta.countries.map(({ region }) => region);
-  let total = 0;
-  eachEvent(data, [actorTest(data, filters.actor), conflictTest(data, filters.conflict)], area, window, (index) => {
+  const tests = [actorTest(data, filters.actor), conflictTest(data, filters.conflict)];
+  eachEvent(data, tests, area, window, (index) => {
+    const deaths = best[index]!;
     const country = attrs.country[index]!;
-    total += 1;
-    countries[country]! += 1;
-    regions[regionOf[country]!]! += 1;
-    adm1[attrs.adm1[index]!]! += 1;
-    adm2[attrs.adm2[index]!]! += 1;
+    tallies.region.addTotal(deaths);
+    tallies.country.add(country, deaths);
+    tallies.region.add(regionOf[country]!, deaths);
+    tallies.adm1.add(attrs.adm1[index]!, deaths);
+    tallies.adm2.add(attrs.adm2[index]!, deaths);
   });
-  return ({ level, id }: LocationFilter) => {
-    if (level === "region") return regions[id]!;
-    if (level === "country") return countries[id]!;
-    if (level === "adm1") return adm1[id]!;
-    if (level === "adm2") return adm2[id]!;
-    return total;
+  const read = (field: "events" | "fatalities") => ({ level, id }: LocationFilter) => {
+    if (level === "all") {
+      const tally = tallies.region;
+      return field === "events" ? tally.totalEvents : tally.totalFatalities;
+    }
+    return tallies[level][field][id]!;
+  };
+  return { events: read("events"), fatalities: read("fatalities") };
+}
+
+function readList(tally: Tally): MenuCounts<ListFilter> {
+  return {
+    events: ({ id }) => (id === ALL ? tally.totalEvents : tally.events[id]!),
+    fatalities: ({ id }) => (id === ALL ? tally.totalFatalities : tally.fatalities[id]!),
   };
 }
 
-/** How many events each actor would show, given the other filters. */
+/** What each actor would show, given the other filters. */
 export function countActors(data: EventData, filters: Filters, area: Area, window: DayWindow) {
-  const { sideA, sideB } = data.attrs;
-  const counts = new Uint32Array(data.meta.actors.length);
-  let total = 0;
-  eachEvent(data, [locationTest(data, filters.location), conflictTest(data, filters.conflict)], area, window, (index) => {
-    total += 1;
-    counts[sideA[index]!]! += 1;
-    if (sideB[index] !== sideA[index]) counts[sideB[index]!]! += 1;
+  const { attrs, best } = data;
+  const { sideA, sideB } = attrs;
+  const tally = new Tally(data.meta.actors.length);
+  const tests = [locationTest(data, filters.location), conflictTest(data, filters.conflict)];
+  eachEvent(data, tests, area, window, (index) => {
+    const deaths = best[index]!;
+    tally.addTotal(deaths);
+    tally.add(sideA[index]!, deaths);
+    if (sideB[index] !== sideA[index]) tally.add(sideB[index]!, deaths);
   });
-  return ({ id }: ListFilter) => (id === ALL ? total : counts[id]!);
+  return readList(tally);
 }
 
-/** How many events each conflict would show, given the other filters. */
+/** What each conflict would show, given the other filters. */
 export function countConflicts(data: EventData, filters: Filters, area: Area, window: DayWindow) {
-  const { conflict } = data.attrs;
-  const counts = new Uint32Array(data.meta.conflicts.length);
-  let total = 0;
-  eachEvent(data, [locationTest(data, filters.location), actorTest(data, filters.actor)], area, window, (index) => {
-    total += 1;
-    counts[conflict[index]!]! += 1;
+  const { attrs, best } = data;
+  const tally = new Tally(data.meta.conflicts.length);
+  const tests = [locationTest(data, filters.location), actorTest(data, filters.actor)];
+  eachEvent(data, tests, area, window, (index) => {
+    const deaths = best[index]!;
+    tally.addTotal(deaths);
+    tally.add(attrs.conflict[index]!, deaths);
   });
-  return ({ id }: ListFilter) => (id === ALL ? total : counts[id]!);
+  return readList(tally);
 }

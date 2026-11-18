@@ -24,6 +24,8 @@ npm run dev
 - **Rendering:** a small WebGL2 renderer in `src/renderer.ts` adds every event into a density buffer, then turns density into light with a two-size glow. A point's area grows with its deaths.
 - **Filtering:** the location, actor and conflict filters run on the CPU and upload one byte per event. Dates and the box are checked on the GPU, so dragging the timeline doesn't re-upload anything.
 - **Dates:** an event shows for every day from its start to its end date. The timeline moves a month at a time.
+- **Fatalities:** the timeline chart and the dropdown numbers use UCDP's best estimate of deaths. The chart shares an event's deaths across the months it runs through, by days. Dropdowns hide anything with no events under the current filters.
+- **Outlines:** country outlines come from Natural Earth's 1:50m countries, projected to Equal Earth in `public/data/outlines.bin`.
 - **Provisional data:** 2026 events come from UCDP's monthly candidate release and are flagged as provisional in `attrs.bin`.
 
 ## Rebuild the data
@@ -32,4 +34,10 @@ The source CSVs are too large for GitHub, so they aren't in the repo. Put `GEDEv
 
 ```bash
 python scripts/prep_data.py
+```
+
+The country outlines need Python with pyshp:
+
+```bash
+python scripts/build_outlines.py
 ```

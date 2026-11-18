@@ -131,3 +131,22 @@ export async function loadEvents(onProgress: (fraction: number) => void): Promis
   };
   return { meta, buffer: events.buffer, ...splitRecords(events.buffer, count), attrs };
 }
+
+/** Country outlines as segment endpoints on the events' grid. Loaded after the events, since the map works without them. */
+export async function loadOutlines(): Promise<Uint16Array> {
+  return new Uint16Array(await (await fetchOk("outlines.bin")).arrayBuffer());
+}
+
+/** A country's label spot on the events' grid. */
+export interface CountryLabel {
+  name: string;
+  x: number;
+  y: number;
+  /** The web map zoom where Natural Earth suggests the label first appears. */
+  minZoom: number;
+}
+
+/** Country labels, most important first. Loaded after the events, like the outlines. */
+export async function loadLabels(): Promise<CountryLabel[]> {
+  return (await fetchOk("labels.json")).json();
+}

@@ -36,7 +36,8 @@ interface Drag {
 interface TimelineProps {
   /** Every month's start, plus one more for the end of the last month. */
   months: Month[];
-  monthlyCounts: Uint32Array;
+  /** Each month's value for the chart. */
+  monthlyValues: ArrayLike<number>;
   range: MonthRange;
   isFiltered: boolean;
   formatMonth: (month: number) => string;
@@ -51,9 +52,10 @@ interface TimelineProps {
 
 const clamp = (value: number, low: number, high: number) => Math.min(Math.max(value, low), high);
 
-/** Plots each month's count at the middle of that month. */
-function countChartPaths(days: number[], counts: Uint32Array, span: number) {
-  const peak = Math.max(1, ...counts);
+/** Plots each month's value at the middle of that month. */
+function chartPaths(days: number[], counts: ArrayLike<number>, span: number) {
+  let peak = 1;
+  for (let month = 0; month < counts.length; month += 1) peak = Math.max(peak, counts[month]!);
   const middle = (month: number) => ((days[month]! + days[month + 1]!) / 2 / span) * VIEW_WIDTH;
   const points = Array.from(counts, (count, month) => {
     return `${middle(month)} ${VIEW_HEIGHT - (count / peak) * CHART_HEIGHT}`;
@@ -65,7 +67,7 @@ function countChartPaths(days: number[], counts: Uint32Array, span: number) {
 
 export function Timeline({
   months,
-  monthlyCounts,
+  monthlyValues,
   range,
   isFiltered,
   formatMonth,
@@ -115,8 +117,8 @@ export function Timeline({
       .join("");
   }, [days, months, span, lastMonth, trackWidth]);
   const chart = useMemo(
-    () => countChartPaths(days.map((day) => day - days[0]!), monthlyCounts, span),
-    [days, monthlyCounts, span],
+    () => chartPaths(days.map((day) => day - days[0]!), monthlyValues, span),
+    [days, monthlyValues, span],
   );
 
   const nearestMonth = (clientX: number) => {
