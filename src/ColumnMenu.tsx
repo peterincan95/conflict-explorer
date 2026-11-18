@@ -47,8 +47,10 @@ interface ColumnMenuProps<T> {
   selected: T;
   selectedName: string;
   onSelect: (value: T) => void;
-  /** How many events an item would show. Only called while the menu is open. */
+  /** The number shown beside an item, and sorted by. Only called while the menu is open. */
   countOf: (value: T) => number;
+  /** Whether an item would show anything. Items that wouldn't are hidden, unless selected. */
+  hasEntries: (value: T) => boolean;
   /** Columns whose order sorting wouldn't change, so they get no sort buttons. */
   unsortedColumns?: number[];
   /** Whether the menu is filtering, which marks its button. */
@@ -88,6 +90,16 @@ function sortItems<T>(
         ? { ...item, children: sortItems(item.children, orders, countOf, column + 1) }
         : item,
     );
+}
+
+/** Drops items that would show nothing, and anything left with no items under it. */
+function pruneItems<T>(items: MenuItem<T>[], keep: (value: T) => boolean): MenuItem<T>[] {
+  return items.flatMap((item) => {
+    if (item.value !== undefined && !item.pin && !keep(item.value)) return [];
+    const children = item.children.length > 0 ? pruneItems(item.children, keep) : item.children;
+    if (item.value === undefined && children.length === 0) return [];
+    return [children === item.children ? item : { ...item, children }];
+  });
 }
 
 /** The same items' positions once the menu is sorted another way. Names are unique in a column. */
@@ -151,6 +163,7 @@ export function ColumnMenu<T>({
   selectedName,
   onSelect,
   countOf,
+  hasEntries,
   unsortedColumns = [],
   isActive = false,
 }: ColumnMenuProps<T>) {
@@ -173,11 +186,19 @@ export function ColumnMenu<T>({
   const hoverTimer = useRef(0);
   const hoverTarget = useRef<string | null>(null);
 
-  const { isSearching, sections } = useMemo(() => search(items, query), [items, query]);
+  const keep = (value: T) => value === selected || hasEntries(value);
   // Counts are only worked out while the menu is open.
+  const shownItems = useMemo(
+    () => (isOpen ? pruneItems(items, (value) => value === selected || hasEntries(value)) : items),
+    [isOpen, items, selected, hasEntries],
+  );
+  const { isSearching, sections } = useMemo(
+    () => search(shownItems, query),
+    [shownItems, query],
+  );
   const sorted = useMemo(
-    () => (isOpen ? sortItems(items, orders, countOf) : items),
-    [isOpen, items, orders, countOf],
+    () => (isOpen ? sortItems(shownItems, orders, countOf) : shownItems),
+    [isOpen, shownItems, orders, countOf],
   );
   const results = sections.flatMap(([, members]) => members);
 
@@ -245,7 +266,7 @@ export function ColumnMenu<T>({
     keepScroll.current = false;
     setQuery("");
     setRowLimits({});
-    setPath(pathTo(sortItems(items, orders, countOf), selected) ?? [0]);
+    setPath(pathTo(sortItems(pruneItems(items, keep), orders, countOf), selected) ?? [0]);
     setIsOpen(true);
   };
 
@@ -268,7 +289,7 @@ export function ColumnMenu<T>({
     // Re-sorting starts the column from the top rather than jumping to the active item.
     keepScroll.current = true;
     document.getElementById(`${id}-column-${column}`)?.scrollTo({ top: 0 });
-    setPath(samePath(sorted, sortItems(items, next, countOf), path));
+    setPath(samePath(sorted, sortItems(shownItems, next, countOf), path));
     setOrders(next);
     if (!isTouch.current) searchBox.current?.focus();
   };
