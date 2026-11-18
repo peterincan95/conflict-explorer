@@ -19,12 +19,6 @@ export const COPY = {
     search: "Search regions, countries, provinces and districts",
     noDivisions: "No smaller areas recorded",
   },
-  actor: {
-    button: "Actor",
-    all: "All actors",
-    columns: ["Actors"],
-    search: "Search actors",
-  },
   conflict: {
     button: "Conflict",
     all: "All conflicts",
@@ -44,17 +38,39 @@ export const COPY = {
     columnIn: (column: string, parent: string) => `${column} in ${parent}`,
   },
 
+  settings: {
+    button: "Settings",
+    fatalities: "Fatality figures",
+    best: "Best estimate",
+    range: "Range",
+    colorByType: "Color points by conflict type",
+  },
+  legend: {
+    title: "Legend",
+    types: { 1: "State-based conflict", 2: "Non-state conflict", 3: "Violence against civilians" },
+    size: "Deaths per event",
+  },
+
   boxSelect: "Box select",
   labels: "Labels",
   clearBox: "Clear box",
   resetView: "Reset view",
   drawHint: "Drag on the map to draw a box",
 
+  topEvents: {
+    title: "Deadliest events",
+    show: "Show deadliest events",
+    hide: "Hide deadliest events",
+    showMore: "Show more",
+    deaths: (count: string, isOne: boolean) => `${count} ${isOne ? "death" : "deaths"}`,
+    zoomTo: "Zoom to this event",
+  },
+
   timeline: {
     title: "Timeline",
     show: "Show timeline",
     hide: "Hide timeline",
-    reset: "Reset to all dates",
+    reset: "Reset to all dates and zoom out",
     start: "Start date",
     end: "End date",
   },

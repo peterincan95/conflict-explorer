@@ -1,4 +1,4 @@
-import type { EventData } from "./data";
+import type { Details, EventData } from "./data";
 import { ALL, type ListFilter, type LocationFilter } from "./filters";
 
 /** Positions are stored as 16-bit integers across the projection's extent. */
@@ -22,7 +22,6 @@ export interface DayWindow {
 
 export interface Filters {
   location: LocationFilter;
-  actor: ListFilter;
   conflict: ListFilter;
 }
 
@@ -41,12 +40,6 @@ function locationTest({ attrs, meta }: EventData, { level, id }: LocationFilter)
   return always;
 }
 
-function actorTest({ attrs }: EventData, { id }: ListFilter): Test {
-  if (id === ALL) return always;
-  const { sideA, sideB } = attrs;
-  return (index) => sideA[index] === id || sideB[index] === id;
-}
-
 function conflictTest({ attrs }: EventData, { id }: ListFilter): Test {
   if (id === ALL) return always;
   const { conflict } = attrs;
@@ -63,9 +56,9 @@ function areaTest({ x, y }: EventData, area: Area): Test {
   };
 }
 
-/** 1 for each event that passes the location, actor and conflict filters. The GPU draws only these. */
-export function filterEvents(data: EventData, { location, actor, conflict }: Filters) {
-  const tests = [locationTest(data, location), actorTest(data, actor), conflictTest(data, conflict)];
+/** 1 for each event that passes the location and conflict filters. The GPU draws only these. */
+export function filterEvents(data: EventData, { location, conflict }: Filters) {
+  const tests = [locationTest(data, location), conflictTest(data, conflict)];
   const visible = new Uint8Array(data.meta.count);
   let count = 0;
   for (let index = 0; index < visible.length; index += 1) {
@@ -77,22 +70,39 @@ export function filterEvents(data: EventData, { location, actor, conflict }: Fil
   return { visible, count };
 }
 
+/** A death toll: the best estimate, and the low and high ones once they've loaded. */
+export interface Toll {
+  best: number;
+  low: number;
+  high: number;
+}
+
 /**
- * Events and fatalities among the filtered events inside the box and dates, and the
+ * Events and deaths among the filtered events inside the box and dates, and the
  * filtered events in the dates wherever they are, which sets the points' brightness.
  */
-export function totals(data: EventData, visible: Uint8Array, area: Area, { from, to }: DayWindow) {
+export function totals(
+  data: EventData,
+  details: Details | null,
+  visible: Uint8Array,
+  area: Area,
+  { from, to }: DayWindow,
+) {
   const { start, end, best } = data;
   const inArea = areaTest(data, area);
   let events = 0;
-  let fatalities = 0;
   let shown = 0;
+  const fatalities: Toll = { best: 0, low: 0, high: 0 };
   for (let index = 0; index < visible.length; index += 1) {
     if (!visible[index] || start[index]! >= to || end[index]! < from) continue;
     shown += 1;
     if (inArea(index)) {
       events += 1;
-      fatalities += best[index]!;
+      fatalities.best += best[index]!;
+      if (details) {
+        fatalities.low += details.low[index]!;
+        fatalities.high += details.high[index]!;
+      }
     }
   }
   return { events, fatalities, shown };
@@ -117,14 +127,18 @@ export function fatalitiesByMonth(
   visible: Uint8Array,
   area: Area,
   monthOf: Uint16Array,
+  best: Uint32Array = data.best,
+  /** Only events of this type of violence, if given. */
+  onlyType = 0,
 ) {
-  const { start, end, best } = data;
+  const { type } = data.attrs;
+  const { start, end } = data;
   const { months } = data.meta;
   const totals = new Float64Array(months.length - 1);
   const inArea = areaTest(data, area);
   for (let index = 0; index < visible.length; index += 1) {
     const deaths = best[index]!;
-    if (!visible[index] || deaths === 0 || !inArea(index)) continue;
+    if (!visible[index] || deaths === 0 || (onlyType && type[index] !== onlyType) || !inArea(index)) continue;
     const first = start[index]!;
     const last = end[index]!;
     const firstMonth = monthOf[first]!;
@@ -147,7 +161,11 @@ export function fatalitiesByMonth(
 export interface MenuCounts<T> {
   events: (value: T) => number;
   fatalities: (value: T) => number;
+  low: (value: T) => number;
+  high: (value: T) => number;
 }
+
+type TollField = "fatalities" | "low" | "high";
 
 /** Runs `add` for each event in the dates and box that passes every test. */
 function eachEvent(
@@ -168,91 +186,163 @@ function eachEvent(
 class Tally {
   events: Uint32Array;
   fatalities: Float64Array;
-  totalEvents = 0;
-  totalFatalities = 0;
+  low: Float64Array;
+  high: Float64Array;
+  totals = { events: 0, fatalities: 0, low: 0, high: 0 };
 
-  constructor(size: number) {
+  constructor(
+    size: number,
+    private data: EventData,
+    private details: Details | null,
+  ) {
     this.events = new Uint32Array(size);
     this.fatalities = new Float64Array(size);
+    this.low = new Float64Array(size);
+    this.high = new Float64Array(size);
   }
 
-  add(id: number, deaths: number) {
+  /** Counts an event toward an id. */
+  add(id: number, index: number) {
     this.events[id]! += 1;
-    this.fatalities[id]! += deaths;
+    this.fatalities[id]! += this.data.best[index]!;
+    if (!this.details) return;
+    this.low[id]! += this.details.low[index]!;
+    this.high[id]! += this.details.high[index]!;
   }
 
-  addTotal(deaths: number) {
-    this.totalEvents += 1;
-    this.totalFatalities += deaths;
+  addTotal(index: number) {
+    const { totals } = this;
+    totals.events += 1;
+    totals.fatalities += this.data.best[index]!;
+    if (!this.details) return;
+    totals.low += this.details.low[index]!;
+    totals.high += this.details.high[index]!;
+  }
+
+  read(field: "events" | TollField, id: number | null) {
+    return id === null ? this.totals[field] : this[field][id]!;
   }
 }
 
 /** What each location menu item would show, given the other filters. */
 export function countLocations(
   data: EventData,
+  details: Details | null,
   filters: Filters,
   area: Area,
   window: DayWindow,
 ): MenuCounts<LocationFilter> {
-  const { meta, attrs, best } = data;
+  const { meta, attrs } = data;
   const tallies = {
-    region: new Tally(meta.regions.length),
-    country: new Tally(meta.countries.length),
-    adm1: new Tally(meta.adm1.length),
-    adm2: new Tally(meta.adm2.length),
+    region: new Tally(meta.regions.length, data, details),
+    country: new Tally(meta.countries.length, data, details),
+    adm1: new Tally(meta.adm1.length, data, details),
+    adm2: new Tally(meta.adm2.length, data, details),
   };
   const regionOf = meta.countries.map(({ region }) => region);
-  const tests = [actorTest(data, filters.actor), conflictTest(data, filters.conflict)];
+  const tests = [conflictTest(data, filters.conflict)];
   eachEvent(data, tests, area, window, (index) => {
-    const deaths = best[index]!;
     const country = attrs.country[index]!;
-    tallies.region.addTotal(deaths);
-    tallies.country.add(country, deaths);
-    tallies.region.add(regionOf[country]!, deaths);
-    tallies.adm1.add(attrs.adm1[index]!, deaths);
-    tallies.adm2.add(attrs.adm2[index]!, deaths);
+    tallies.region.addTotal(index);
+    tallies.country.add(country, index);
+    tallies.region.add(regionOf[country]!, index);
+    tallies.adm1.add(attrs.adm1[index]!, index);
+    tallies.adm2.add(attrs.adm2[index]!, index);
   });
-  const read = (field: "events" | "fatalities") => ({ level, id }: LocationFilter) => {
-    if (level === "all") {
-      const tally = tallies.region;
-      return field === "events" ? tally.totalEvents : tally.totalFatalities;
-    }
-    return tallies[level][field][id]!;
-  };
-  return { events: read("events"), fatalities: read("fatalities") };
+  const read = (field: "events" | TollField) => ({ level, id }: LocationFilter) =>
+    level === "all" ? tallies.region.read(field, null) : tallies[level].read(field, id);
+  return { events: read("events"), fatalities: read("fatalities"), low: read("low"), high: read("high") };
 }
 
 function readList(tally: Tally): MenuCounts<ListFilter> {
-  return {
-    events: ({ id }) => (id === ALL ? tally.totalEvents : tally.events[id]!),
-    fatalities: ({ id }) => (id === ALL ? tally.totalFatalities : tally.fatalities[id]!),
-  };
-}
-
-/** What each actor would show, given the other filters. */
-export function countActors(data: EventData, filters: Filters, area: Area, window: DayWindow) {
-  const { attrs, best } = data;
-  const { sideA, sideB } = attrs;
-  const tally = new Tally(data.meta.actors.length);
-  const tests = [locationTest(data, filters.location), conflictTest(data, filters.conflict)];
-  eachEvent(data, tests, area, window, (index) => {
-    const deaths = best[index]!;
-    tally.addTotal(deaths);
-    tally.add(sideA[index]!, deaths);
-    if (sideB[index] !== sideA[index]) tally.add(sideB[index]!, deaths);
-  });
-  return readList(tally);
+  const read = (field: "events" | TollField) => ({ id }: ListFilter) =>
+    tally.read(field, id === ALL ? null : id);
+  return { events: read("events"), fatalities: read("fatalities"), low: read("low"), high: read("high") };
 }
 
 /** What each conflict would show, given the other filters. */
-export function countConflicts(data: EventData, filters: Filters, area: Area, window: DayWindow) {
-  const { attrs, best } = data;
-  const tally = new Tally(data.meta.conflicts.length);
-  const tests = [locationTest(data, filters.location), actorTest(data, filters.actor)];
+export function countConflicts(
+  data: EventData,
+  details: Details | null,
+  filters: Filters,
+  area: Area,
+  window: DayWindow,
+) {
+  const tally = new Tally(data.meta.conflicts.length, data, details);
+  const tests = [locationTest(data, filters.location)];
   eachEvent(data, tests, area, window, (index) => {
-    const deaths = best[index]!;
-    tally.addTotal(deaths);
-    tally.add(attrs.conflict[index]!, deaths);
+    tally.addTotal(index);
+    tally.add(data.attrs.conflict[index]!, index);
   });
   return readList(tally);
+}
+
+// Bounds leave out this share of events at each edge, so a stray event far away
+// doesn't stretch them.
+const BOUNDS_TRIM = 0.005;
+const BOUNDS_BINS = 1024;
+
+/** Where most of the filtered events sit, in grid units, or null if there are none. */
+export function filteredBounds({ x, y }: EventData, visible: Uint8Array, count: number): Area | null {
+  if (count === 0) return null;
+  const binsX = new Uint32Array(BOUNDS_BINS);
+  const binsY = new Uint32Array(BOUNDS_BINS);
+  const binOf = (value: number) => Math.min(BOUNDS_BINS - 1, Math.floor((value / GRID_MAX) * BOUNDS_BINS));
+  for (let index = 0; index < visible.length; index += 1) {
+    if (!visible[index]) continue;
+    binsX[binOf(x[index]!)]! += 1;
+    binsY[binOf(y[index]!)]! += 1;
+  }
+  const skip = Math.floor(count * BOUNDS_TRIM);
+  const edges = (bins: Uint32Array) => {
+    let low = 0;
+    for (let seen = 0; seen + bins[low]! <= skip; low += 1) seen += bins[low]!;
+    let high = BOUNDS_BINS - 1;
+    for (let seen = 0; seen + bins[high]! <= skip; high -= 1) seen += bins[high]!;
+    const toGrid = (bin: number) => Math.round((bin / BOUNDS_BINS) * GRID_MAX);
+    return [toGrid(low), toGrid(high + 1)] as const;
+  };
+  const [west, east] = edges(binsX);
+  const [south, north] = edges(binsY);
+  return { west, east, south, north };
+}
+
+/** The first and last day of the filtered events, or null if there are none. */
+export function filteredDays({ start, end }: EventData, visible: Uint8Array): DayWindow | null {
+  let from = Infinity;
+  let to = -Infinity;
+  for (let index = 0; index < visible.length; index += 1) {
+    if (!visible[index]) continue;
+    from = Math.min(from, start[index]!);
+    to = Math.max(to, end[index]! + 1);
+  }
+  return from === Infinity ? null : { from, to };
+}
+
+/**
+ * The filtered events in the box and dates with the most deaths, most first, as many
+ * as `limit`. Ties go to the earlier event.
+ */
+export function topEvents(
+  data: EventData,
+  visible: Uint8Array,
+  area: Area,
+  { from, to }: DayWindow,
+  limit: number,
+) {
+  const { start, end, best } = data;
+  const inArea = areaTest(data, area);
+  const top: number[] = [];
+  for (let index = 0; index < visible.length; index += 1) {
+    if (!visible[index] || start[index]! >= to || end[index]! < from) continue;
+    const deaths = best[index]!;
+    if (top.length === limit && deaths <= best[top.at(-1)!]!) continue;
+    if (!inArea(index)) continue;
+    // Events come sorted by day, so an equal count stays after the earlier event.
+    let at = top.length;
+    while (at > 0 && best[top[at - 1]!]! < deaths) at -= 1;
+    top.splice(at, 0, index);
+    if (top.length > limit) top.pop();
+  }
+  return top;
 }

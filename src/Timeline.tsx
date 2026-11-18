@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -8,12 +9,23 @@ import {
   type RefObject,
 } from "react";
 import { COPY } from "./copy";
-import type { Month } from "./data";
+import { monthName, type Month } from "./data";
 
 /** Indexes into the month list. The range covers `from` up to, but not including, `to`. */
 export type MonthRange = [from: number, to: number];
 
+/** The stretch of days the track shows, from the epoch. */
+export type DayView = [from: number, to: number];
+
 type DragKind = "from" | "to" | "band";
+
+/** One line on the chart, or a band from low to high when `range` is given. */
+export interface ChartSeries {
+  key: string;
+  color: string;
+  values: ArrayLike<number>;
+  range: readonly [ArrayLike<number>, ArrayLike<number>] | null;
+}
 
 // The chart and month ticks share one SVG coordinate system, stretched to fit the track.
 const VIEW_WIDTH = 1000;
@@ -24,8 +36,18 @@ const MONTH_TICK_HEIGHT = 9;
 const MIN_MONTH_TICK_PIXELS = 3;
 const MIN_YEAR_LABEL_PIXELS = 48;
 const YEAR_LABEL_STEPS = [1, 2, 5, 10];
+// Months get their own labels once each is this wide.
+const MIN_MONTH_LABEL_PIXELS = 34;
+
+// Zoom change per pixel of wheel movement, and the fewest days the track can show.
+const WHEEL_SPEED = 0.002;
+const PINCH_WHEEL_SPEED = 0.012;
+const LINE_HEIGHT_PIXELS = 16;
+export const MIN_VIEW_DAYS = 365;
 
 const DOUBLE_PRESS_MS = 350;
+// A band chart's fill when each type of violence has its own.
+const TYPE_BAND_OPACITY = 0.45;
 
 interface Drag {
   kind: DragKind;
@@ -33,62 +55,132 @@ interface Drag {
   startRange: MonthRange;
 }
 
+/** Dragging the track to pan the view. */
+interface Pan {
+  startX: number;
+  startView: DayView;
+}
+
 interface TimelineProps {
   /** Every month's start, plus one more for the end of the last month. */
   months: Month[];
-  /** Each month's value for the chart. */
-  monthlyValues: ArrayLike<number>;
+  /** What the chart shows, by month. */
+  series: ChartSeries[];
+  /** One series filled underneath, or several as lines. */
+  chartStyle: "area" | "lines";
   range: MonthRange;
   isFiltered: boolean;
+  /** The days the track shows, zoomed by the wheel. */
+  view: DayView;
+  onViewChange: (view: DayView) => void;
   formatMonth: (month: number) => string;
   onChange: (range: MonthRange) => void;
   onReset: () => void;
   startHandle: RefObject<HTMLDivElement | null>;
   isOpen: boolean;
   onToggle: (isOpen: boolean) => void;
-  /** The color of the monthly count chart. */
-  chartColor: string;
 }
 
 const clamp = (value: number, low: number, high: number) => Math.min(Math.max(value, low), high);
 
-/** Plots each month's value at the middle of that month. */
-function chartPaths(days: number[], counts: ArrayLike<number>, span: number) {
+/**
+ * Plots each month's value at the middle of that month, scaled to the tallest month in
+ * view. `toX` places a day across the chart.
+ */
+function chartPaths(
+  days: number[],
+  series: ChartSeries[],
+  view: DayView,
+  toX: (day: number) => number,
+) {
+  const middleDay = (month: number) => (days[month]! + days[month + 1]!) / 2;
+  const monthCount = days.length - 1;
+  // One month past each edge, so the line runs off the chart instead of stopping short.
+  let first = 0;
+  while (first < monthCount - 1 && middleDay(first + 1) < view[0]) first += 1;
+  let last = monthCount - 1;
+  while (last > 0 && middleDay(last - 1) > view[1]) last -= 1;
   let peak = 1;
-  for (let month = 0; month < counts.length; month += 1) peak = Math.max(peak, counts[month]!);
-  const middle = (month: number) => ((days[month]! + days[month + 1]!) / 2 / span) * VIEW_WIDTH;
-  const points = Array.from(counts, (count, month) => {
-    return `${middle(month)} ${VIEW_HEIGHT - (count / peak) * CHART_HEIGHT}`;
-  });
-  const line = `M${points.join("L")}`;
-  const lastX = middle(counts.length - 1);
-  return { line, area: `${line}L${lastX} ${VIEW_HEIGHT}L${middle(0)} ${VIEW_HEIGHT}Z` };
+  for (const { values, range } of series) {
+    const top = range ? range[1] : values;
+    for (let month = first; month <= last; month += 1) {
+      if (days[month + 1]! > view[0] && days[month]! < view[1]) peak = Math.max(peak, top[month]!);
+    }
+  }
+  return series.map(({ key, color, values, range }) => ({
+    key,
+    color,
+    isBand: range !== null,
+    ...seriesPaths(values, range, first, last, peak, middleDay, toX),
+  }));
+}
+
+function seriesPaths(
+  counts: ArrayLike<number>,
+  range: ChartSeries["range"],
+  first: number,
+  last: number,
+  peak: number,
+  middleDay: (month: number) => number,
+  toX: (day: number) => number,
+) {
+  const pointsOf = (values: ArrayLike<number>) => {
+    const points: string[] = [];
+    for (let month = first; month <= last; month += 1) {
+      points.push(`${toX(middleDay(month))} ${VIEW_HEIGHT - (values[month]! / peak) * CHART_HEIGHT}`);
+    }
+    return points;
+  };
+  if (range) {
+    // A band from the low line up to the high line.
+    const low = pointsOf(range[0]);
+    const high = pointsOf(range[1]);
+    const lowLine = `M${low.join("L")}`;
+    const highLine = `M${high.join("L")}`;
+    return { line: lowLine + highLine, area: `${highLine}L${low.reverse().join("L")}Z` };
+  }
+  const line = `M${pointsOf(counts).join("L")}`;
+  const bottom = `L${toX(middleDay(last))} ${VIEW_HEIGHT}L${toX(middleDay(first))} ${VIEW_HEIGHT}Z`;
+  return { line, area: line + bottom };
 }
 
 export function Timeline({
   months,
-  monthlyValues,
+  series,
+  chartStyle,
   range,
   isFiltered,
+  view,
+  onViewChange,
   formatMonth,
   onChange,
   onReset,
   startHandle,
   isOpen,
   onToggle,
-  chartColor,
 }: TimelineProps) {
   const track = useRef<HTMLDivElement>(null);
   const drag = useRef<Drag | null>(null);
+  const pan = useRef<Pan | null>(null);
   const lastPress = useRef(0);
   const [trackWidth, setTrackWidth] = useState(1000);
   const lastMonth = months.length - 1;
   const days = useMemo(() => months.map(({ day }) => day), [months]);
-  const span = days[lastMonth]! - days[0]!;
+  const [viewFrom, viewTo] = view;
+  const viewSpan = viewTo - viewFrom;
   const [from, to] = range;
-  const share = (month: number) => (days[month]! - days[0]!) / span;
-  const percent = (month: number) => `${share(month) * 100}%`;
-  const bandMiddle = ((share(from) + share(to)) / 2) * 100;
+  const share = (month: number) => (days[month]! - viewFrom) / viewSpan;
+  // Handles and the band stop at the track's ends when the range runs past the view.
+  const shownShare = (month: number) => clamp(share(month), 0, 1);
+  const percent = (month: number) => `${shownShare(month) * 100}%`;
+  const inView = (month: number) => share(month) >= 0 && share(month) <= 1;
+  const isZoomed = viewFrom > days[0]! || viewTo < days[lastMonth]!;
+  const canReset = isFiltered || isZoomed;
+  const bandMiddle = ((shownShare(from) + shownShare(to)) / 2) * 100;
+
+  // The newest view and callback, for the wheel listener.
+  const latest = useRef({ view, onViewChange, days });
+  latest.current = { view, onViewChange, days };
 
   useLayoutEffect(() => {
     const element = track.current;
@@ -98,32 +190,79 @@ export function Timeline({
     return () => observer.disconnect();
   }, [isOpen]);
 
+  // The wheel zooms around the pointer; sideways scrolling, or Shift with the wheel, pans.
+  useEffect(() => {
+    const element = track.current;
+    if (!element) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const { view: current, onViewChange: change, days: allDays } = latest.current;
+      const [start, end] = current;
+      const first = allDays[0]!;
+      const final = allDays.at(-1)!;
+      const lineScale = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? LINE_HEIGHT_PIXELS : 1;
+      const { left, width } = element.getBoundingClientRect();
+      const span = end - start;
+      const sideways = event.shiftKey ? event.deltaY || event.deltaX : event.deltaX;
+      const upDown = event.shiftKey ? 0 : event.deltaY;
+      if (Math.abs(sideways) > Math.abs(upDown)) {
+        const shift = clamp((sideways * lineScale * span) / width, first - start, final - end);
+        if (shift !== 0) change([start + shift, end + shift]);
+        return;
+      }
+      const speed = event.ctrlKey ? PINCH_WHEEL_SPEED : WHEEL_SPEED;
+      const fullSpan = final - first;
+      const nextSpan = clamp(
+        span * Math.exp(upDown * lineScale * speed),
+        Math.min(MIN_VIEW_DAYS, fullSpan),
+        fullSpan,
+      );
+      const anchorShare = clamp((event.clientX - left) / width, 0, 1);
+      const anchor = start + anchorShare * span;
+      const nextStart = clamp(anchor - anchorShare * nextSpan, first, final - nextSpan);
+      if (nextStart !== start || nextSpan !== span) change([nextStart, nextStart + nextSpan]);
+    };
+    element.addEventListener("wheel", onWheel, { passive: false });
+    return () => element.removeEventListener("wheel", onWheel);
+  }, [isOpen]);
+
   // January of each year, as an index into the month list.
   const yearStarts = useMemo(
     () => months.slice(0, -1).flatMap((month, index) => (month.month === 1 ? [index] : [])),
     [months],
   );
+  const pixelsPerMonth = (trackWidth / viewSpan) * (365.25 / 12);
   const yearStep =
-    YEAR_LABEL_STEPS.find((step) => (trackWidth / (span / 365.25)) * step >= MIN_YEAR_LABEL_PIXELS) ??
+    YEAR_LABEL_STEPS.find((step) => pixelsPerMonth * 12 * step >= MIN_YEAR_LABEL_PIXELS) ??
     YEAR_LABEL_STEPS.at(-1)!;
-  const labeledYears = yearStarts.filter((index) => months[index]!.year % yearStep === 0);
+  const visibleYears = yearStarts.filter(inView);
+  const labeledYears = visibleYears.filter((index) => months[index]!.year % yearStep === 0);
+  // Months that start in view, other than Januaries, which have their year.
+  const labeledMonths =
+    pixelsPerMonth >= MIN_MONTH_LABEL_PIXELS
+      ? months
+          .slice(0, -1)
+          .flatMap((month, index) => (month.month !== 1 && inView(index) ? [index] : []))
+      : [];
 
   const monthTicks = useMemo(() => {
-    if (trackWidth / lastMonth < MIN_MONTH_TICK_PIXELS) return "";
-    return days
-      .slice(1, -1)
-      .filter((_, index) => months[index + 1]!.month !== 1)
-      .map((day) => `M${((day - days[0]!) / span) * VIEW_WIDTH} 0V${MONTH_TICK_HEIGHT}`)
-      .join("");
-  }, [days, months, span, lastMonth, trackWidth]);
+    if (pixelsPerMonth < MIN_MONTH_TICK_PIXELS) return "";
+    const ticks: string[] = [];
+    for (let index = 1; index < lastMonth; index += 1) {
+      const day = days[index]!;
+      if (months[index]!.month === 1 || day < viewFrom || day > viewTo) continue;
+      ticks.push(`M${((day - viewFrom) / viewSpan) * VIEW_WIDTH} 0V${MONTH_TICK_HEIGHT}`);
+    }
+    return ticks.join("");
+  }, [days, months, lastMonth, pixelsPerMonth, viewFrom, viewTo, viewSpan]);
   const chart = useMemo(
-    () => chartPaths(days.map((day) => day - days[0]!), monthlyValues, span),
-    [days, monthlyValues, span],
+    () => chartPaths(days, series, [viewFrom, viewTo], (day) => ((day - viewFrom) / viewSpan) * VIEW_WIDTH),
+    [days, series, viewFrom, viewTo, viewSpan],
   );
 
   const nearestMonth = (clientX: number) => {
     const { left, width } = track.current!.getBoundingClientRect();
-    const day = days[0]! + clamp((clientX - left) / width, 0, 1) * span;
+    const day = viewFrom + clamp((clientX - left) / width, 0, 1) * viewSpan;
     let nearest = 0;
     days.forEach((start, index) => {
       if (Math.abs(start - day) < Math.abs(days[nearest]! - day)) nearest = index;
@@ -144,9 +283,14 @@ export function Timeline({
     // Counted from presses, not dblclick, so it also works on touch screens.
     const isDoublePress = event.timeStamp - lastPress.current < DOUBLE_PRESS_MS;
     lastPress.current = event.timeStamp;
-    if (isDoublePress && isFiltered) {
+    if (isDoublePress && canReset) {
       lastPress.current = 0;
       onReset();
+      return;
+    }
+    // A band reaching past both ends of a zoomed view has nowhere to move, so it pans.
+    if (kind === "band" && isZoomed && share(from) <= 0 && share(to) >= 1) {
+      startPan(event);
       return;
     }
     event.currentTarget.focus();
@@ -154,7 +298,31 @@ export function Timeline({
     drag.current = { kind, startMonth: nearestMonth(event.clientX), startRange: range };
   };
 
+  const startPan = (event: PointerEvent<HTMLElement>) => {
+    if (!isZoomed || event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    pan.current = { startX: event.clientX, startView: view };
+  };
+
+  // Presses on the track itself, not on the band or a handle.
+  const startTrackPan = (event: PointerEvent<HTMLElement>) => {
+    if (event.target === event.currentTarget) startPan(event);
+  };
+
   const onDrag = (event: PointerEvent) => {
+    if (pan.current) {
+      const { startX, startView } = pan.current;
+      const span = startView[1] - startView[0];
+      const width = track.current!.getBoundingClientRect().width;
+      const shift = clamp(
+        (-(event.clientX - startX) / width) * span,
+        days[0]! - startView[0],
+        days[lastMonth]! - startView[1],
+      );
+      onViewChange([startView[0] + shift, startView[1] + shift]);
+      return;
+    }
     if (!drag.current) return;
     const { kind, startMonth, startRange } = drag.current;
     const next = moved(kind, startRange, nearestMonth(event.clientX) - startMonth);
@@ -163,6 +331,7 @@ export function Timeline({
 
   const endDrag = () => {
     drag.current = null;
+    pan.current = null;
   };
 
   const onKeyDown = (kind: DragKind) => (event: KeyboardEvent) => {
@@ -223,7 +392,7 @@ export function Timeline({
                 className="pill pill-icon"
                 aria-label={COPY.timeline.reset}
                 title={COPY.timeline.reset}
-                disabled={!isFiltered}
+                disabled={!canReset}
                 onClick={onReset}
               >
                 <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -246,10 +415,17 @@ export function Timeline({
               {rangeText}
             </span>
           </div>
-          <div className="track" ref={track}>
+          <div
+            className={isZoomed ? "track pannable" : "track"}
+            ref={track}
+            onPointerDown={startTrackPan}
+            onPointerMove={onDrag}
+            onPointerUp={endDrag}
+            onPointerCancel={endDrag}
+          >
             <div
               className={isFiltered ? "band band-filtered" : "band"}
-              style={{ left: percent(from), right: `${100 - share(to) * 100}%` }}
+              style={{ left: percent(from), right: `${100 - shownShare(to) * 100}%` }}
               onPointerDown={startDrag("band")}
               onPointerMove={onDrag}
               onPointerUp={endDrag}
@@ -261,20 +437,42 @@ export function Timeline({
               preserveAspectRatio="none"
               aria-hidden="true"
             >
-              <path className="chart-area" d={chart.area} style={{ fill: chartColor }} />
-              <path className="chart-line" d={chart.line} style={{ stroke: chartColor }} />
+              {chart.map(({ key, color, isBand, line, area }) =>
+                chartStyle === "area" ? (
+                  <g key={key}>
+                    <path className="chart-area" d={area} style={{ fill: color }} />
+                    <path className="chart-line" d={line} style={{ stroke: color }} />
+                  </g>
+                ) : isBand ? (
+                  <path key={key} d={area} style={{ fill: color, fillOpacity: TYPE_BAND_OPACITY }} />
+                ) : (
+                  <path key={key} className="chart-line chart-type-line" d={line} style={{ stroke: color }} />
+                ),
+              )}
               <path className="month-ticks" d={monthTicks} />
             </svg>
-            {yearStarts.slice(1).map((index) => (
+            {visibleYears.map((index) => (
               <div className="tick" key={index} style={{ left: percent(index) }} />
             ))}
             {handle("from", from, COPY.timeline.start, from)}
             {handle("to", to, COPY.timeline.end, to - 1)}
           </div>
-          <div className="year-row" aria-hidden="true">
+          <div
+            className={isZoomed ? "year-row pannable" : "year-row"}
+            aria-hidden="true"
+            onPointerDown={startPan}
+            onPointerMove={onDrag}
+            onPointerUp={endDrag}
+            onPointerCancel={endDrag}
+          >
             {labeledYears.map((index) => (
               <span key={index} style={{ left: percent(index) }}>
                 {months[index]!.year}
+              </span>
+            ))}
+            {labeledMonths.map((index) => (
+              <span className="month-label" key={index} style={{ left: percent(index) }}>
+                {monthName(months[index]!.month)}
               </span>
             ))}
           </div>
