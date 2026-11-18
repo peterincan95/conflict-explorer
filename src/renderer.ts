@@ -27,13 +27,21 @@ interface Resources {
   downsample: Program;
   blur: Program;
   composite: Program;
+  lines: Program;
   pointsVao: WebGLVertexArrayObject;
   visibleBuffer: WebGLBuffer;
   emptyVao: WebGLVertexArrayObject;
 }
 
+/** Country outlines uploaded as pairs of vertices, one pair per line segment. */
+interface OutlineLines {
+  vao: WebGLVertexArrayObject;
+  vertexCount: number;
+}
+
 interface Targets {
   density: Target;
+  outlines: Target;
   nearA: Target;
   nearB: Target;
   farA: Target;
@@ -84,6 +92,8 @@ const DEFAULT_BRIGHTNESS = 1;
 // Events outside a drawn box are drawn this bright, and lose this share of their color.
 const UNSELECTED_WEIGHT = 0.16;
 const UNSELECTED_DESATURATION = 0.5;
+// Country outlines show under the points, in gray, this bright.
+const OUTLINE_BRIGHTNESS = 0.24;
 const NEAR_GLOW = 0.3;
 const FAR_GLOW = 0.75;
 
@@ -146,6 +156,22 @@ void main() {
   color = vec4(weight, 0.0, 0.0, weight * v_unselected);
 }`;
 
+const LINE_VERTEX = `#version 300 es
+layout(location = 0) in vec2 a_position;
+uniform vec2 u_scale;
+uniform vec2 u_offset;
+void main() {
+  gl_Position = vec4(a_position * u_scale + u_offset, 0.0, 1.0);
+}`;
+
+const LINE_FRAGMENT = `#version 300 es
+precision mediump float;
+uniform float u_brightness;
+out vec4 color;
+void main() {
+  color = vec4(u_brightness);
+}`;
+
 const FULLSCREEN_VERTEX = `#version 300 es
 out vec2 v_uv;
 void main() {
@@ -203,6 +229,7 @@ in vec2 v_uv;
 uniform sampler2D u_density;
 uniform sampler2D u_near;
 uniform sampler2D u_far;
+uniform sampler2D u_outlines;
 uniform float u_nearGlow;
 uniform float u_farGlow;
 uniform float u_outsideDesaturation;
@@ -229,6 +256,8 @@ void main() {
   float outside = (core.a + near.a + far.a) / max(core.r + near.r + far.r, 1e-6);
   float gray = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
   rgb = mix(rgb, vec3(gray), clamp(outside, 0.0, 1.0) * u_outsideDesaturation);
+  // Outlines show where the points are dimmer than they are.
+  rgb = max(rgb, vec3(texture(u_outlines, v_uv).r));
   color = vec4(rgb, 1.0);
 }`;
 
@@ -269,10 +298,15 @@ function createProgram(
   return { program, uniforms };
 }
 
-function createTarget(gl: WebGL2RenderingContext, width: number, height: number): Target {
+function createTarget(
+  gl: WebGL2RenderingContext,
+  width: number,
+  height: number,
+  format: number = gl.RGBA16F,
+): Target {
   const texture = gl.createTexture()!;
   gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA16F, width, height);
+  gl.texStorage2D(gl.TEXTURE_2D, 1, format, width, height);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -314,6 +348,8 @@ export class EventRenderer {
   private camera: Camera = { zoom: 1, x: 0.5, y: 0.5 };
   private frame = 0;
   private maxPointSize = 64;
+  private outlines: Uint16Array | null = null;
+  private outlineLines: OutlineLines | null = null;
   private gradient = new Float32Array(gradientStops(DEFAULT_GRADIENT).flatMap(hexChannels));
 
   constructor(
@@ -375,6 +411,13 @@ export class EventRenderer {
     this.requestDraw();
   }
 
+  /** Country outlines, as segment endpoints on the events' grid. */
+  setOutlines(outlines: Uint16Array) {
+    this.outlines = outlines;
+    this.uploadOutlines();
+    this.requestDraw();
+  }
+
   setCamera(camera: Camera) {
     this.camera = camera;
     this.requestDraw();
@@ -401,6 +444,8 @@ export class EventRenderer {
     this.createResources();
     this.createTargets();
     this.uploadVisible();
+    this.outlineLines = null;
+    this.uploadOutlines();
     this.requestDraw();
   };
 
@@ -454,11 +499,26 @@ export class EventRenderer {
         "u_farGlow",
         "u_stops",
         "u_outsideDesaturation",
+        "u_outlines",
       ]),
+      lines: createProgram(gl, LINE_VERTEX, LINE_FRAGMENT, ["u_scale", "u_offset", "u_brightness"]),
       pointsVao,
       visibleBuffer,
       emptyVao: gl.createVertexArray()!,
     };
+  }
+
+  private uploadOutlines() {
+    const { gl, outlines } = this;
+    if (!outlines || !this.resources || this.outlineLines) return;
+    const vao = gl.createVertexArray()!;
+    gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, outlines, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.UNSIGNED_SHORT, true, 0, 0);
+    gl.bindVertexArray(null);
+    this.outlineLines = { vao, vertexCount: outlines.length / 2 };
   }
 
   private uploadVisible() {
@@ -480,6 +540,7 @@ export class EventRenderer {
       ] as const;
     this.targets = {
       density: createTarget(gl, canvas.width, canvas.height),
+      outlines: createTarget(gl, canvas.width, canvas.height, gl.R8),
       nearA: createTarget(gl, ...size(4)),
       nearB: createTarget(gl, ...size(4)),
       farA: createTarget(gl, ...size(16)),
@@ -542,9 +603,28 @@ export class EventRenderer {
     gl.uniform1f(uniforms.u_weight!, weight);
     gl.uniform2f(uniforms.u_roundSizes!, ROUND_POINT_SIZES[0]!, ROUND_POINT_SIZES[1]!);
     gl.drawArrays(gl.POINTS, 0, this.data.meta.count);
+    this.drawOutlines(resources, targets, [scaleX, scaleY, -scaleX * x, -scaleY * y]);
 
     gl.disable(gl.BLEND);
     this.drawGlow(resources, targets);
+  }
+
+  /** Draws the outlines into their own buffer, which the composite lays under the points. */
+  private drawOutlines(resources: Resources, targets: Targets, projection: number[]) {
+    const { gl, outlineLines } = this;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, targets.outlines.framebuffer);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    if (!outlineLines) return;
+    const { lines } = resources;
+    gl.useProgram(lines.program);
+    gl.bindVertexArray(outlineLines.vao);
+    gl.uniform2f(lines.uniforms.u_scale!, projection[0]!, projection[1]!);
+    gl.uniform2f(lines.uniforms.u_offset!, projection[2]!, projection[3]!);
+    gl.uniform1f(lines.uniforms.u_brightness!, OUTLINE_BRIGHTNESS);
+    // Where borders overlap, they keep one line's brightness rather than adding up.
+    gl.blendEquation(gl.MAX);
+    gl.drawArrays(gl.LINES, 0, outlineLines.vertexCount);
+    gl.blendEquation(gl.FUNC_ADD);
   }
 
   /** Fewer events get brighter points, so a single year reads as well as all of them. */
@@ -596,6 +676,9 @@ export class EventRenderer {
     gl.bindTexture(gl.TEXTURE_2D, targets.nearA.texture);
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, targets.farA.texture);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, targets.outlines.texture);
+    gl.uniform1i(composite.uniforms.u_outlines!, 3);
     gl.uniform1i(composite.uniforms.u_density!, 0);
     gl.uniform1i(composite.uniforms.u_near!, 1);
     gl.uniform1i(composite.uniforms.u_far!, 2);

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { BoxOutline, useBoxDraw, type Box } from "./box";
 import { ColumnMenu } from "./ColumnMenu";
 import { COPY } from "./copy";
-import { loadEvents, monthName, type EventData } from "./data";
+import { loadEvents, loadLabels, loadOutlines, monthName, type EventData } from "./data";
 import {
   buildListMenu,
   buildLocationMenu,
@@ -14,9 +14,9 @@ import { MapView } from "./mapView";
 import { DEFAULT_GRADIENT, EventRenderer } from "./renderer";
 import {
   countActors,
-  countByMonth,
   countConflicts,
   countLocations,
+  fatalitiesByMonth,
   filterEvents,
   monthOfDay,
   totals,
@@ -24,6 +24,7 @@ import {
   type Area,
   type DayWindow,
   type Filters,
+  type MenuCounts,
 } from "./selection";
 import { Timeline, type MonthRange } from "./Timeline";
 
@@ -51,10 +52,16 @@ export function App() {
   return <Explorer data={data} />;
 }
 
-/** Puts off an expensive count until something asks for it, then keeps the answer. */
-function lazyCounts<T>(count: () => (value: T) => number) {
-  let counts: ((value: T) => number) | null = null;
-  return (value: T) => (counts ??= count())(value);
+/**
+ * Puts off an expensive count until a menu asks for it, then keeps the answer. Menus
+ * show deaths, and hide items with no events.
+ */
+function lazyCounts<T>(count: () => MenuCounts<T>) {
+  let counts: MenuCounts<T> | null = null;
+  return {
+    fatalities: (value: T) => (counts ??= count()).fatalities(value),
+    hasEntries: (value: T) => (counts ??= count()).events(value) > 0,
+  };
 }
 
 function Explorer({ data }: { data: EventData }) {
@@ -74,6 +81,7 @@ function Explorer({ data }: { data: EventData }) {
   const [area, setArea] = useState<Area>(WHOLE_WORLD);
   const [isDrawingBox, setIsDrawingBox] = useState(false);
   const [isMapMoved, setIsMapMoved] = useState(false);
+  const [showLabels, setShowLabels] = useState(true);
   const [isTimelineOpen, setIsTimelineOpen] = useState(true);
   const [announcement, setAnnouncement] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -97,8 +105,8 @@ function Explorer({ data }: { data: EventData }) {
   );
 
   const filtered = useMemo(() => filterEvents(data, filters), [data, filters]);
-  const monthlyCounts = useMemo(
-    () => countByMonth(data, filtered.visible, area, monthOf),
+  const monthlyFatalities = useMemo(
+    () => fatalitiesByMonth(data, filtered.visible, area, monthOf),
     [data, filtered, area, monthOf],
   );
   const total = useMemo(
@@ -141,6 +149,19 @@ function Explorer({ data }: { data: EventData }) {
     mapView.current = view;
     if (import.meta.env.DEV) Object.assign(globalThis, { eventRenderer: current, mapView: view });
 
+    // Outlines come after the points, and the map works without them.
+    let isCurrent = true;
+    loadOutlines()
+      .then((outlines) => {
+        if (isCurrent) current.setOutlines(outlines);
+      })
+      .catch((reason: unknown) => console.warn("Country outlines didn't load", reason));
+    loadLabels()
+      .then((labels) => {
+        if (isCurrent) view.setLabels(labels);
+      })
+      .catch((reason: unknown) => console.warn("Country labels didn't load", reason));
+
     const updateLayout = () => {
       const { width, height } = mapPlot.current!.getBoundingClientRect();
       current.setLayout(width, height);
@@ -151,6 +172,7 @@ function Explorer({ data }: { data: EventData }) {
     updateLayout();
 
     return () => {
+      isCurrent = false;
       observer.disconnect();
       view.destroy();
       current.destroy();
@@ -171,6 +193,10 @@ function Explorer({ data }: { data: EventData }) {
     renderer.current?.setArea(area);
     mapView.current?.setArea(area);
   }, [area]);
+
+  useEffect(() => {
+    mapView.current?.setLabelsVisible(showLabels);
+  }, [showLabels]);
 
   useEffect(() => {
     mapView.current?.setPanEnabled(!isDrawingBox);
@@ -220,7 +246,8 @@ function Explorer({ data }: { data: EventData }) {
             selected={location}
             selectedName={location.name}
             onSelect={setLocation}
-            countOf={locationCounts}
+            countOf={locationCounts.fatalities}
+            hasEntries={locationCounts.hasEntries}
             isActive={!isAll(location)}
           />
           <ColumnMenu
@@ -232,7 +259,8 @@ function Explorer({ data }: { data: EventData }) {
             selected={actor}
             selectedName={actor.name}
             onSelect={setActor}
-            countOf={actorCounts}
+            countOf={actorCounts.fatalities}
+            hasEntries={actorCounts.hasEntries}
             isActive={!isAll(actor)}
           />
           <ColumnMenu
@@ -244,7 +272,8 @@ function Explorer({ data }: { data: EventData }) {
             selected={conflict}
             selectedName={conflict.name}
             onSelect={setConflict}
-            countOf={conflictCounts}
+            countOf={conflictCounts.fatalities}
+            hasEntries={conflictCounts.hasEntries}
             isActive={!isAll(conflict)}
           />
         </div>
@@ -284,6 +313,14 @@ function Explorer({ data }: { data: EventData }) {
           >
             {COPY.boxSelect}
           </button>
+          <button
+            className="pill"
+            type="button"
+            aria-pressed={showLabels}
+            onClick={() => setShowLabels(!showLabels)}
+          >
+            {COPY.labels}
+          </button>
           {hasBox && (
             <button className="pill" type="button" onClick={() => setArea(WHOLE_WORLD)}>
               {COPY.clearBox}
@@ -300,7 +337,7 @@ function Explorer({ data }: { data: EventData }) {
 
       <Timeline
         months={meta.months}
-        monthlyCounts={monthlyCounts}
+        monthlyValues={monthlyFatalities}
         range={range}
         isFiltered={isFiltered}
         formatMonth={formatMonth}
