@@ -161,9 +161,32 @@ export async function loadEvents(onProgress: (fraction: number) => void): Promis
   return { meta, buffer: events.buffer, ...splitRecords(events.buffer, count), attrs };
 }
 
-/** Country outlines as segment endpoints on the events' grid. Loaded after the events, since the map works without them. */
-export async function loadOutlines(): Promise<Uint16Array> {
-  return new Uint16Array(await (await fetchOk("outlines.bin")).arrayBuffer());
+/** The basemap's two levels of line detail: for the zoomed-out map, and for closer in. */
+export type LineDetail = "coarse" | "fine";
+
+/** How many segments of each kind a lines file holds, in this order. */
+export interface LineCounts {
+  coast: number;
+  border: number;
+  province: number;
+}
+
+const LINE_FILES: Record<LineDetail, { file: string; key: string }> = {
+  coarse: { file: "lines-50m.bin", key: "50m" },
+  fine: { file: "lines-10m.bin", key: "10m" },
+};
+
+/** Basemap lines as segment endpoints on the events' grid, with how many of each kind. */
+export async function loadLines(detail: LineDetail, basemap: Basemap) {
+  const { file, key } = LINE_FILES[detail];
+  const segments = new Uint16Array(await (await fetchOk(file)).arrayBuffer());
+  return { segments, counts: basemap.lines[key]! };
+}
+
+/** The hillshade image, decoded off the main thread where the browser can. */
+export async function loadHillshade(): Promise<ImageBitmap> {
+  const blob = await (await fetchOk("hillshade.webp")).blob();
+  return createImageBitmap(blob);
 }
 
 /** Each event's low and high death estimates and place name, which only totals and the list need. */
@@ -185,16 +208,30 @@ export async function loadDetails(count: number): Promise<Details> {
   return { low: u32(0), high: u32(1), place: u32(2), places };
 }
 
-/** A country's label spot on the events' grid. */
-export interface CountryLabel {
+/** A label's spot on the events' grid. */
+export interface MapLabel {
   name: string;
   x: number;
   y: number;
-  /** The web map zoom where Natural Earth suggests the label first appears. */
+  /** The web map zoom where the label first shows, from Natural Earth's ranks. */
   minZoom: number;
 }
 
-/** Country labels, most important first. Loaded after the events, like the outlines. */
-export async function loadLabels(): Promise<CountryLabel[]> {
-  return (await fetchOk("labels.json")).json();
+export interface PlaceLabel extends MapLabel {
+  capital: boolean;
+}
+
+/** What the basemap needs besides its lines and image. Labels come most important first. */
+export interface Basemap {
+  lines: Record<string, LineCounts>;
+  /** `flat` is the gray of flat ground and water in the image, out of 255. */
+  hillshade: { width: number; height: number; flat: number };
+  countries: MapLabel[];
+  provinces: MapLabel[];
+  places: PlaceLabel[];
+}
+
+/** Loaded after the events, since the map works without it. */
+export async function loadBasemap(): Promise<Basemap> {
+  return (await fetchOk("basemap.json")).json();
 }

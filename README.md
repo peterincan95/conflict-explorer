@@ -25,7 +25,8 @@ npm run dev
 - **Filtering:** the location and conflict filters run on the CPU and upload one byte per event: 0 if filtered out, else the event's type of violence, which colors it when type colors are on. Dates and the box are checked on the GPU, so dragging the timeline doesn't re-upload anything.
 - **Dates:** an event shows for every day from its start to its end date. The timeline moves a month at a time.
 - **Fatalities:** the totals, the dropdown numbers and the event list use UCDP's best estimate of deaths, or the low–high range when Range is on. The timeline chart, point sizes and sort orders always use the best estimate. Where UCDP's low is above its best or its high below it, `prep_data.py` widens the range to take in the best. The chart shares an event's deaths across the months it runs through, by days. Dropdowns hide anything with no events under the current filters.
-- **Outlines:** country outlines come from Natural Earth's 1:50m countries, projected to Equal Earth in `public/data/outlines.bin`.
+- **Basemap:** coastlines, country borders and province borders come from Natural Earth, projected to Equal Earth in `public/data/lines-50m.bin` and, for closer in, `public/data/lines-10m.bin`, which loads once the map zooms in. The relief is Natural Earth's PRISMA hillshade, reprojected into `public/data/hillshade.webp`; it fades out past the zoom that shows a whole country. The shader draws everything outside the Equal Earth outline black.
+- **Labels:** `public/data/basemap.json` holds label spots for countries, provinces and populated places. Country and province spots are the point deepest inside each one's largest piece. Natural Earth's scalerank and labelrank set the zoom where each label appears, and labels that would overlap a more important one are skipped. Settings can hide the hillshade, the places and the labels.
 - **Provisional data:** 2026 events come from UCDP's monthly candidate release and are flagged as provisional in `attrs.bin`.
 
 ## Rebuild the data
@@ -36,8 +37,14 @@ The source CSVs are too large for GitHub, so they aren't in the repo. Put `GEDEv
 python scripts/prep_data.py
 ```
 
-The country outlines need Python with pyshp:
+The basemap needs Natural Earth's data in `raw-data/revised-natural-earth/`, which is too large for the repo (about 400 MB). From [Natural Earth](https://www.naturalearthdata.com/downloads/), put each layer's shapefile at `raw-data/revised-natural-earth/<scale>/ne_<scale>_<layer>/`:
+
+- 10m and 50m: `coastline`, `admin_0_boundary_lines_land`, `admin_1_states_provinces_lines`
+- 10m: `admin_0_countries`, `admin_1_states_provinces`, `populated_places`
+- 50m: `land`, `lakes`
+
+Put the 1:50m Shaded Relief Basic raster (`PRISMA_SR_50M`) at `raw-data/revised-natural-earth/PRISMA_SR_50M/`. The script needs Python with numpy, pyshp, shapely and Pillow, and takes a minute or two:
 
 ```bash
-python scripts/build_outlines.py
+python scripts/build_basemap.py
 ```

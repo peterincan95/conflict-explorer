@@ -1,5 +1,5 @@
 import type { Box } from "./box";
-import type { CountryLabel, Meta } from "./data";
+import type { Basemap, MapLabel, Meta } from "./data";
 import { HOME, isHome, PanZoom } from "./panZoom";
 import { MAP_MAX_ZOOM, mapFill, pointWidth, type EventRenderer } from "./renderer";
 import { GRID_MAX, WHOLE_WORLD, type Area } from "./selection";
@@ -7,16 +7,60 @@ import { GRID_MAX, WHOLE_WORLD, type Area } from "./selection";
 const MAX_PIXEL_RATIO = 2;
 const BOX_LINE = "#e8e8e8";
 
-// A label shows once the map is zoomed in as far as a web map at its Natural Earth
-// zoom, less this bias, and only where it doesn't overlap a label already placed.
+// A label shows once the map is zoomed in as far as a web map at its zoom, less this
+// bias, and only where it doesn't overlap a label already placed.
 const LABEL_ZOOM_BIAS = 0.2;
 // Web map tiles are this many pixels wide at zoom 0.
 const WEB_TILE_PIXELS = 256;
-const LABEL_FONT = '500 12px "IBM Plex Sans Condensed", sans-serif';
-const LABEL_COLOR = "#c8c8c8";
-const LABEL_HALO = "rgb(0 0 0 / 85%)";
-const LABEL_HALF_HEIGHT = 7;
-const LABEL_GAP = 6;
+const LABEL_HALO = "rgb(0 0 0 / 70%)";
+const LABEL_GAP = 4;
+
+/** How one kind of label looks. */
+interface LabelStyle {
+  font: string;
+  color: string;
+  letterSpacing: string;
+  lineHeight: number;
+  uppercase: boolean;
+  /** Names wrap onto more lines past this width, in CSS pixels. */
+  wrapWidth: number;
+}
+
+const COUNTRY_STYLE: LabelStyle = {
+  font: '700 12px "Roboto Condensed", sans-serif',
+  color: "#7a7a7a",
+  letterSpacing: "0.4px",
+  lineHeight: 14,
+  uppercase: true,
+  wrapWidth: 84,
+};
+const PROVINCE_STYLE: LabelStyle = {
+  font: '500 10.5px "Roboto Condensed", sans-serif',
+  color: "#5c5c5c",
+  letterSpacing: "0.6px",
+  lineHeight: 12,
+  uppercase: true,
+  wrapWidth: 72,
+};
+const PLACE_STYLE: LabelStyle = {
+  font: '400 12.5px "Roboto Condensed", sans-serif',
+  color: "#b4b4b4",
+  letterSpacing: "0px",
+  lineHeight: 14,
+  uppercase: false,
+  wrapWidth: 96,
+};
+// Places get a small ring, with their name this far to its right.
+const PLACE_RING_RADIUS = 2.5;
+const PLACE_RING_COLOR = "#b4b4b4";
+const PLACE_NAME_OFFSET = 5;
+
+/** A label ready to draw: its name split into lines, and the widest line's width. */
+interface MeasuredLabel {
+  label: MapLabel;
+  lines: string[];
+  width: number;
+}
 
 // Fitting the map to an area leaves this share of the view around it, and stops
 // at this zoom so a single town keeps some of its surroundings.
@@ -67,10 +111,13 @@ export class MapView {
   private area = WHOLE_WORLD;
   private frame = 0;
   private context: CanvasRenderingContext2D;
-  private labels: CountryLabel[] = [];
-  /** Each label's width, measured once the font has loaded. */
-  private labelWidths: number[] = [];
+  private basemap: Basemap | null = null;
+  /** Labels by kind, wrapped and measured once the font has loaded. */
+  private countries: MeasuredLabel[] = [];
+  private provinces: MeasuredLabel[] = [];
+  private places: MeasuredLabel[] = [];
   private showLabels = true;
+  private showPlaces = true;
   private highlight: Highlight | null = null;
   private zoomListeners = new Set<(zoom: number) => void>();
 
@@ -107,21 +154,56 @@ export class MapView {
     };
   }
 
-  setLabels(labels: CountryLabel[]) {
-    this.labels = labels;
+  setBasemap(basemap: Basemap) {
+    this.basemap = basemap;
     this.measureLabels();
     this.requestDraw();
   }
 
+  /** Shows or hides country and province names. */
   setLabelsVisible(isVisible: boolean) {
     this.showLabels = isVisible;
     this.requestDraw();
   }
 
+  /** Shows or hides populated places. */
+  setPlacesVisible(isVisible: boolean) {
+    this.showPlaces = isVisible;
+    this.requestDraw();
+  }
+
   private measureLabels() {
+    const { basemap } = this;
+    if (!basemap) return;
+    this.countries = this.measure(basemap.countries, COUNTRY_STYLE);
+    this.provinces = this.measure(basemap.provinces, PROVINCE_STYLE);
+    this.places = this.measure(basemap.places, PLACE_STYLE);
+  }
+
+  /** Splits each name into lines no wider than the style's wrap width, where it can. */
+  private measure(labels: MapLabel[], style: LabelStyle): MeasuredLabel[] {
     const { context } = this;
-    context.font = LABEL_FONT;
-    this.labelWidths = this.labels.map(({ name }) => context.measureText(name).width);
+    this.applyStyle(style);
+    return labels.map((label) => {
+      const name = style.uppercase ? label.name.toUpperCase() : label.name;
+      const lines: string[] = [];
+      for (const word of name.split(" ")) {
+        const last = lines.at(-1);
+        if (last !== undefined && context.measureText(`${last} ${word}`).width <= style.wrapWidth) {
+          lines[lines.length - 1] = `${last} ${word}`;
+        } else {
+          lines.push(word);
+        }
+      }
+      const width = Math.max(...lines.map((line) => context.measureText(line).width));
+      return { label, lines, width };
+    });
+  }
+
+  private applyStyle(style: LabelStyle) {
+    const { context } = this;
+    context.font = style.font;
+    context.letterSpacing = style.letterSpacing;
   }
 
   destroy() {
@@ -198,38 +280,70 @@ export class MapView {
     context.stroke();
   }
 
-  /** Most important first, skipping any label that would overlap one already placed. */
-  private drawLabels(
+  /**
+   * Countries first, then places, then provinces, each most important first, skipping
+   * any label that would overlap one already placed.
+   */
+  private drawLabels(toScreenX: (x: number) => number, toScreenY: (y: number) => number, zoom: number) {
+    const placed: ScreenBox[] = [];
+    const { context } = this;
+    context.lineJoin = "round";
+    context.lineWidth = 3;
+    context.strokeStyle = LABEL_HALO;
+    context.textBaseline = "middle";
+    if (this.showLabels) this.drawKind(this.countries, COUNTRY_STYLE, false, placed, toScreenX, toScreenY, zoom);
+    if (this.showPlaces) this.drawKind(this.places, PLACE_STYLE, true, placed, toScreenX, toScreenY, zoom);
+    if (this.showLabels) this.drawKind(this.provinces, PROVINCE_STYLE, false, placed, toScreenX, toScreenY, zoom);
+    context.letterSpacing = "0px";
+  }
+
+  private drawKind(
+    labels: MeasuredLabel[],
+    style: LabelStyle,
+    hasRing: boolean,
+    placed: ScreenBox[],
     toScreenX: (x: number) => number,
     toScreenY: (y: number) => number,
     zoom: number,
   ) {
-    const { context, width, height, labels, labelWidths } = this;
-    const placed: ScreenBox[] = [];
-    context.font = LABEL_FONT;
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    context.lineJoin = "round";
-    context.lineWidth = 3;
-    context.strokeStyle = LABEL_HALO;
-    context.fillStyle = LABEL_COLOR;
-    labels.forEach(({ name, x, y, minZoom }, index) => {
-      if (minZoom > zoom) return;
-      const screenX = toScreenX(x / GRID_MAX);
-      const screenY = toScreenY(y / GRID_MAX);
-      const halfWidth = labelWidths[index]! / 2 + LABEL_GAP;
+    const { context, width, height } = this;
+    this.applyStyle(style);
+    context.textAlign = hasRing ? "left" : "center";
+    for (const { label, lines, width: textWidth } of labels) {
+      // Labels come sorted by the zoom they show at, so the rest show later still.
+      if (label.minZoom > zoom) break;
+      const x = toScreenX(label.x / GRID_MAX);
+      const y = toScreenY(label.y / GRID_MAX);
+      const textHeight = lines.length * style.lineHeight;
+      const textLeft = hasRing ? x + PLACE_NAME_OFFSET : x - textWidth / 2;
       const box = {
-        left: screenX - halfWidth,
-        right: screenX + halfWidth,
-        top: screenY - LABEL_HALF_HEIGHT - LABEL_GAP,
-        bottom: screenY + LABEL_HALF_HEIGHT + LABEL_GAP,
+        left: (hasRing ? x - PLACE_RING_RADIUS : textLeft) - LABEL_GAP,
+        right: textLeft + textWidth + LABEL_GAP,
+        top: y - textHeight / 2 - LABEL_GAP,
+        bottom: y + textHeight / 2 + LABEL_GAP,
       };
-      if (box.right < 0 || box.left > width || box.bottom < 0 || box.top > height) return;
-      if (overlapsAny(box, placed)) return;
+      if (box.right < 0 || box.left > width || box.bottom < 0 || box.top > height) continue;
+      if (overlapsAny(box, placed)) continue;
       placed.push(box);
-      context.strokeText(name, screenX, screenY);
-      context.fillText(name, screenX, screenY);
-    });
+      if (hasRing) {
+        context.beginPath();
+        context.arc(x, y, PLACE_RING_RADIUS, 0, Math.PI * 2);
+        context.strokeStyle = LABEL_HALO;
+        context.stroke();
+        context.lineWidth = 1.25;
+        context.strokeStyle = PLACE_RING_COLOR;
+        context.stroke();
+        context.lineWidth = 3;
+        context.strokeStyle = LABEL_HALO;
+      }
+      context.fillStyle = style.color;
+      const textX = hasRing ? textLeft : x;
+      lines.forEach((line, index) => {
+        const lineY = y - textHeight / 2 + (index + 0.5) * style.lineHeight;
+        context.strokeText(line, textX, lineY);
+        context.fillText(line, textX, lineY);
+      });
+    }
   }
 
   /** The area under a box drawn on the map. */
@@ -260,10 +374,8 @@ export class MapView {
 
     const toScreenX = (x: number) => width / 2 + (x - camera.x) * width * fill[0] * camera.zoom;
     const toScreenY = (y: number) => height / 2 - (y - camera.y) * height * fill[1] * camera.zoom;
-    if (this.showLabels) {
-      const webZoom = Math.log2((width * fill[0] * camera.zoom) / WEB_TILE_PIXELS);
-      this.drawLabels(toScreenX, toScreenY, webZoom + LABEL_ZOOM_BIAS);
-    }
+    const webZoom = Math.log2((width * fill[0] * camera.zoom) / WEB_TILE_PIXELS);
+    this.drawLabels(toScreenX, toScreenY, webZoom + LABEL_ZOOM_BIAS);
     this.drawHighlight(toScreenX, toScreenY, camera.zoom);
     if (area === WHOLE_WORLD) return;
 

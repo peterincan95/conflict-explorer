@@ -6,8 +6,9 @@ import {
   formatDays,
   loadDetails,
   loadEvents,
-  loadLabels,
-  loadOutlines,
+  loadBasemap,
+  loadHillshade,
+  loadLines,
   monthName,
   VIOLENCE_TYPES,
   type Details,
@@ -23,8 +24,8 @@ import {
 } from "./filters";
 import { Legend } from "./Legend";
 import { MapView } from "./mapView";
-import { DEFAULT_GRADIENT, EventRenderer, TYPE_COLORS } from "./renderer";
-import { Settings, type FatalityMode } from "./Settings";
+import { DEFAULT_GRADIENT, DETAIL_LINE_ZOOM, EventRenderer, TYPE_COLORS } from "./renderer";
+import { Settings, type FatalityMode, type MapToggles } from "./Settings";
 import {
   countConflicts,
   countLocations,
@@ -131,13 +132,18 @@ function Explorer({ data }: { data: EventData }) {
   const [area, setArea] = useState<Area>(WHOLE_WORLD);
   const [isDrawingBox, setIsDrawingBox] = useState(false);
   const [isMapMoved, setIsMapMoved] = useState(false);
-  const [showLabels, setShowLabels] = useState(true);
   const [isTimelineOpen, setIsTimelineOpen] = useState(true);
   const [announcement, setAnnouncement] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [details, setDetails] = useState<Details | null>(null);
   const [fatalityMode, setFatalityMode] = useState<FatalityMode>("best");
-  const [colorByType, setColorByType] = useState(false);
+  const [toggles, setToggles] = useState<MapToggles>({
+    colorByType: false,
+    hillshade: true,
+    places: true,
+    labels: true,
+  });
+  const { colorByType } = toggles;
 
   const canvas = useRef<HTMLCanvasElement>(null);
   const linesCanvas = useRef<HTMLCanvasElement>(null);
@@ -231,18 +237,36 @@ function Explorer({ data }: { data: EventData }) {
     mapView.current = view;
     if (import.meta.env.DEV) Object.assign(globalThis, { eventRenderer: current, mapView: view });
 
-    // Outlines come after the points, and the map works without them.
+    // The basemap comes after the points, and the map works without it. The detailed
+    // lines wait until the map zooms close enough to need them.
     let isCurrent = true;
-    loadOutlines()
-      .then((outlines) => {
-        if (isCurrent) current.setOutlines(outlines);
+    let stopWatchingZoom = () => {};
+    loadBasemap()
+      .then((basemap) => {
+        if (!isCurrent) return;
+        view.setBasemap(basemap);
+        loadLines("coarse", basemap)
+          .then(({ segments, counts }) => {
+            if (isCurrent) current.setLines("coarse", segments, counts);
+          })
+          .catch((reason: unknown) => console.warn("Map lines didn't load", reason));
+        const loadFine = () => {
+          stopWatchingZoom();
+          loadLines("fine", basemap)
+            .then(({ segments, counts }) => {
+              if (isCurrent) current.setLines("fine", segments, counts);
+            })
+            .catch((reason: unknown) => console.warn("Detailed map lines didn't load", reason));
+        };
+        // Starts a little early, so the lines are there by the time they're used.
+        const needsFine = (zoom: number) => zoom >= DETAIL_LINE_ZOOM / 2;
+        if (needsFine(view.zoom)) loadFine();
+        else stopWatchingZoom = view.onZoom((zoom) => needsFine(zoom) && loadFine());
+        return loadHillshade().then((image) => {
+          if (isCurrent) current.setHillshade(image, basemap.hillshade.flat);
+        });
       })
-      .catch((reason: unknown) => console.warn("Country outlines didn't load", reason));
-    loadLabels()
-      .then((labels) => {
-        if (isCurrent) view.setLabels(labels);
-      })
-      .catch((reason: unknown) => console.warn("Country labels didn't load", reason));
+      .catch((reason: unknown) => console.warn("The basemap didn't load", reason));
     loadDetails(meta.count)
       .then((loaded) => {
         if (isCurrent) setDetails(loaded);
@@ -260,6 +284,7 @@ function Explorer({ data }: { data: EventData }) {
 
     return () => {
       isCurrent = false;
+      stopWatchingZoom();
       observer.disconnect();
       view.destroy();
       current.destroy();
@@ -286,8 +311,10 @@ function Explorer({ data }: { data: EventData }) {
   }, [area]);
 
   useEffect(() => {
-    mapView.current?.setLabelsVisible(showLabels);
-  }, [showLabels]);
+    mapView.current?.setLabelsVisible(toggles.labels);
+    mapView.current?.setPlacesVisible(toggles.places);
+    renderer.current?.setReliefVisible(toggles.hillshade);
+  }, [toggles]);
 
   useEffect(() => {
     const index = highlighted;
@@ -424,8 +451,8 @@ function Explorer({ data }: { data: EventData }) {
           <Settings
             fatalityMode={fatalityMode}
             onFatalityModeChange={setFatalityMode}
-            colorByType={colorByType}
-            onColorByTypeChange={setColorByType}
+            toggles={toggles}
+            onTogglesChange={setToggles}
           />
           <button
             className="pill"
@@ -434,14 +461,6 @@ function Explorer({ data }: { data: EventData }) {
             onClick={() => setIsDrawingBox(!isDrawingBox)}
           >
             {COPY.boxSelect}
-          </button>
-          <button
-            className="pill"
-            type="button"
-            aria-pressed={showLabels}
-            onClick={() => setShowLabels(!showLabels)}
-          >
-            {COPY.labels}
           </button>
           {hasBox && (
             <button className="pill" type="button" onClick={() => setArea(WHOLE_WORLD)}>
