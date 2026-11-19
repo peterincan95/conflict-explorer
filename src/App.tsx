@@ -17,6 +17,7 @@ import {
 import {
   buildListMenu,
   buildLocationMenu,
+  buildTypeMenu,
   isAll,
   type ListFilter,
   type LocationFilter,
@@ -30,6 +31,7 @@ import { Settings, type FatalityMode, type MapToggles } from "./Settings";
 import {
   countActors,
   countConflicts,
+  countTypes,
   countLocations,
   fatalitiesByMonth,
   filterEvents,
@@ -51,6 +53,7 @@ const VIEW_PADDING = 0.05;
 // The space between the floating panels and the open part of the map, in CSS pixels,
 // which is also the space between them and the pills and legend at its edges.
 const PANEL_GAP = 16;
+const PHONE_QUERY = "(max-width: 760px)";
 
 /** Events open in the popup: the ones under a click, and the clicked spot. */
 interface Popup {
@@ -104,11 +107,13 @@ function Explorer({ data }: { data: EventData }) {
   const locationMenu = useMemo(() => buildLocationMenu(meta), [meta]);
   const actorMenu = useMemo(() => buildListMenu(meta.actors, COPY.actor), [meta]);
   const conflictMenu = useMemo(() => buildListMenu(meta.conflicts, COPY.conflict), [meta]);
+  const typeMenu = useMemo(() => buildTypeMenu(), []);
   const picker = useMemo(() => new EventPicker(data), [data]);
   const monthOf = useMemo(() => monthOfDay(meta), [meta]);
 
   const [location, setLocation] = useState<LocationFilter>(locationMenu[0]!.value!);
   const [actor, setActor] = useState<ListFilter>(actorMenu[0]!.value!);
+  const [type, setType] = useState<ListFilter>(typeMenu[0]!.value!);
   const [conflict, setConflict] = useState<ListFilter>(conflictMenu[0]!.value!);
   const [range, setRange] = useState<MonthRange>(fullRange);
   const [timelineView, setTimelineView] = useState<DayView>(fullView);
@@ -118,6 +123,8 @@ function Explorer({ data }: { data: EventData }) {
   const [isDrawingBox, setIsDrawingBox] = useState(false);
   const [isMapMoved, setIsMapMoved] = useState(false);
   const [isTimelineOpen, setIsTimelineOpen] = useState(true);
+  // Filters start open, except on phones, where they'd cover much of the map.
+  const [isFiltersOpen, setIsFiltersOpen] = useState(() => !window.matchMedia(PHONE_QUERY).matches);
   const [announcement, setAnnouncement] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [details, setDetails] = useState<Details | null>(null);
@@ -135,6 +142,7 @@ function Explorer({ data }: { data: EventData }) {
   const mapPlot = useRef<HTMLDivElement>(null);
   const header = useRef<HTMLElement>(null);
   const timelineDock = useRef<HTMLDivElement>(null);
+  const filtersPanel = useRef<HTMLElement>(null);
   const startHandle = useRef<HTMLDivElement>(null);
   const renderer = useRef<EventRenderer | null>(null);
   const mapView = useRef<MapView | null>(null);
@@ -146,8 +154,8 @@ function Explorer({ data }: { data: EventData }) {
     [meta, range],
   );
   const filters: Filters = useMemo(
-    () => ({ location, actor, conflict }),
-    [location, actor, conflict],
+    () => ({ location, actor, conflict, type }),
+    [location, actor, conflict, type],
   );
 
   // Ranges show once the low and high estimates have loaded.
@@ -183,6 +191,10 @@ function Explorer({ data }: { data: EventData }) {
   );
   const conflictCounts = useMemo(
     () => lazyCounts(() => countConflicts(data, details, filters, area, dayWindow)),
+    [data, details, filters, area, dayWindow],
+  );
+  const typeCounts = useMemo(
+    () => lazyCounts(() => countTypes(data, details, filters, area, dayWindow)),
     [data, details, filters, area, dayWindow],
   );
 
@@ -252,7 +264,12 @@ function Explorer({ data }: { data: EventData }) {
     // and timeline floating over it.
     const updateLayout = () => {
       const plot = mapPlot.current!.getBoundingClientRect();
-      const top = header.current!.getBoundingClientRect().bottom - plot.top + PANEL_GAP;
+      const headerBox = header.current!.getBoundingClientRect();
+      const filtersBox = filtersPanel.current!.getBoundingClientRect();
+      // Where the filters drop below the header on narrow screens, the map starts below both.
+      const isStacked = filtersBox.top >= headerBox.bottom - 1;
+      const panelsBottom = isStacked ? Math.max(headerBox.bottom, filtersBox.bottom) : headerBox.bottom;
+      const top = panelsBottom - plot.top + PANEL_GAP;
       const bottom = timelineDock.current!.getBoundingClientRect().top - plot.top - PANEL_GAP;
       current.setLayout(plot.width, plot.height);
       view.setLayout(plot.width, plot.height);
@@ -260,10 +277,12 @@ function Explorer({ data }: { data: EventData }) {
       const stage = mapPlot.current!.parentElement!;
       stage.style.setProperty("--open-top", `${top}px`);
       stage.style.setProperty("--open-bottom", `${plot.height - bottom}px`);
+      stage.parentElement!.style.setProperty("--header-bottom", `${headerBox.bottom - plot.top}px`);
     };
     const observer = new ResizeObserver(updateLayout);
     observer.observe(mapPlot.current!);
     observer.observe(header.current!);
+    observer.observe(filtersPanel.current!);
     observer.observe(timelineDock.current!);
     updateLayout();
 
@@ -321,7 +340,7 @@ function Explorer({ data }: { data: EventData }) {
       hasZoomed.current = true;
       return;
     }
-    const isUnfiltered = isAll(filters.location) && isAll(filters.actor) && isAll(filters.conflict);
+    const isUnfiltered = Object.values(filters).every(isAll);
     const bounds = isUnfiltered ? null : filteredBounds(data, filtered.visible, filtered.count);
     mapView.current?.fitTo(bounds);
     const days = isUnfiltered ? null : filteredDays(data, filtered.visible);
@@ -377,65 +396,105 @@ function Explorer({ data }: { data: EventData }) {
       <header className="header glass" ref={header}>
         <div className="title-block">
           <h1>{COPY.title}</h1>
-          <div className="summary">
-            <p>
-              <strong>{eventCount}</strong> {COPY.events}
-            </p>
-            <p>
-              <strong>{fatalityCount}</strong> {COPY.fatalities}
-            </p>
-          </div>
+          <p className="summary">
+            <strong>{eventCount}</strong> {COPY.events}
+            <span className="summary-divider" aria-hidden="true">
+              |
+            </span>
+            <strong>{fatalityCount}</strong> {COPY.fatalities}
+          </p>
         </div>
-        <div className="filters">
-          <span className="filters-label">{COPY.filterBy}</span>
-          <ColumnMenu
-            id="location"
-            label={COPY.location.button}
-            items={locationMenu}
-            columnNames={COPY.location.columns}
-            unsortedColumns={[0]}
-            searchLabel={COPY.location.search}
-            selected={location}
-            selectedName={location.name}
-            onSelect={setLocation}
-            countOf={locationCounts.fatalities}
-            rangeOf={isRange ? locationCounts.range : undefined}
-            hasEntries={locationCounts.hasEntries}
-            isActive={!isAll(location)}
-            onClear={() => setLocation(locationMenu[0]!.value!)}
-          />
-          <ColumnMenu
-            id="actor"
-            label={COPY.actor.button}
-            items={actorMenu}
-            columnNames={COPY.actor.columns}
-            searchLabel={COPY.actor.search}
-            selected={actor}
-            selectedName={actor.name}
-            onSelect={setActor}
-            countOf={actorCounts.fatalities}
-            rangeOf={isRange ? actorCounts.range : undefined}
-            hasEntries={actorCounts.hasEntries}
-            isActive={!isAll(actor)}
-            onClear={() => setActor(actorMenu[0]!.value!)}
-          />
-          <ColumnMenu
-            id="conflict"
-            label={COPY.conflict.button}
-            items={conflictMenu}
-            columnNames={COPY.conflict.columns}
-            searchLabel={COPY.conflict.search}
-            selected={conflict}
-            selectedName={conflict.name}
-            onSelect={setConflict}
-            countOf={conflictCounts.fatalities}
-            rangeOf={isRange ? conflictCounts.range : undefined}
-            hasEntries={conflictCounts.hasEntries}
-            isActive={!isAll(conflict)}
-            onClear={() => setConflict(conflictMenu[0]!.value!)}
-          />
-        </div>
+        <p className="credit">
+          <a href={COPY.credit.href} target="_blank" rel="noreferrer">
+            {COPY.credit.text}
+          </a>
+        </p>
       </header>
+
+      <section
+        className={isFiltersOpen ? "filters-panel glass" : "filters-panel glass collapsed"}
+        ref={filtersPanel}
+        aria-label={COPY.filters.title}
+      >
+        <button
+          type="button"
+          className="filters-toggle"
+          aria-expanded={isFiltersOpen}
+          aria-controls="filters-body"
+          title={isFiltersOpen ? COPY.filters.hide : COPY.filters.show}
+          onClick={() => setIsFiltersOpen(!isFiltersOpen)}
+        >
+          <span className="filters-title">{COPY.filters.title}</span>
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d={isFiltersOpen ? "M3.5 10 8 5.5 12.5 10" : "M3.5 6 8 10.5 12.5 6"} />
+          </svg>
+        </button>
+        {isFiltersOpen && (
+          <div className="filters" id="filters-body">
+            <ColumnMenu
+              id="location"
+              label={COPY.location.button}
+              items={locationMenu}
+              columnNames={COPY.location.columns}
+              unsortedColumns={[0]}
+              searchLabel={COPY.location.search}
+              selected={location}
+              selectedName={location.name}
+              onSelect={setLocation}
+              countOf={locationCounts.fatalities}
+              rangeOf={isRange ? locationCounts.range : undefined}
+              hasEntries={locationCounts.hasEntries}
+              isActive={!isAll(location)}
+              onClear={() => setLocation(locationMenu[0]!.value!)}
+            />
+            <ColumnMenu
+              id="actor"
+              label={COPY.actor.button}
+              items={actorMenu}
+              columnNames={COPY.actor.columns}
+              searchLabel={COPY.actor.search}
+              selected={actor}
+              selectedName={actor.name}
+              onSelect={setActor}
+              countOf={actorCounts.fatalities}
+              rangeOf={isRange ? actorCounts.range : undefined}
+              hasEntries={actorCounts.hasEntries}
+              isActive={!isAll(actor)}
+              onClear={() => setActor(actorMenu[0]!.value!)}
+            />
+            <ColumnMenu
+              id="conflict"
+              label={COPY.conflict.button}
+              items={conflictMenu}
+              columnNames={COPY.conflict.columns}
+              searchLabel={COPY.conflict.search}
+              selected={conflict}
+              selectedName={conflict.name}
+              onSelect={setConflict}
+              countOf={conflictCounts.fatalities}
+              rangeOf={isRange ? conflictCounts.range : undefined}
+              hasEntries={conflictCounts.hasEntries}
+              isActive={!isAll(conflict)}
+              onClear={() => setConflict(conflictMenu[0]!.value!)}
+            />
+            <ColumnMenu
+              id="type"
+              label={COPY.type.button}
+              items={typeMenu}
+              columnNames={COPY.type.columns}
+              searchLabel={COPY.type.search}
+              selected={type}
+              selectedName={type.name}
+              onSelect={setType}
+              countOf={typeCounts.fatalities}
+              rangeOf={isRange ? typeCounts.range : undefined}
+              hasEntries={typeCounts.hasEntries}
+              isActive={!isAll(type)}
+              onClear={() => setType(typeMenu[0]!.value!)}
+            />
+          </div>
+        )}
+      </section>
 
       <p className="visually-hidden" role="status">
         {announcement}

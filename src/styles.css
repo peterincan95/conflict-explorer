@@ -3,6 +3,8 @@
   --text: #fff;
   --text-soft: #d8d8d8;
   --accent: #ff4d5b;
+  /* The points' main red, matching DEFAULT_GRADIENT in renderer.ts. */
+  --point-mid: #d0101f;
   --text-muted: #b4b4b4;
   --divider: #262626;
   --menu: #2c2c2c;
@@ -24,6 +26,7 @@
   --radius: 6px;
   --panel-inset: 16px;
   --mono: "Roboto Mono", ui-monospace, monospace;
+  --sans: "Roboto", system-ui, sans-serif;
   font-family: "Roboto Condensed", system-ui, sans-serif;
   color: var(--text);
   background: var(--background);
@@ -277,18 +280,16 @@ body,
   opacity: 0.9;
 }
 
-/* Header: title, filters, totals */
+/* Header: title, totals and credit */
 
-/* The header hugs its content, with the filters beside the title. */
 .header {
   position: absolute;
   top: var(--panel-inset);
   left: var(--panel-inset);
   z-index: 2;
   display: flex;
-  flex-wrap: wrap;
-  gap: 12px 48px;
-  align-items: center;
+  flex-direction: column;
+  gap: 10px;
   max-width: calc(100% - 2 * var(--panel-inset));
   padding: 14px 22px;
 }
@@ -300,26 +301,111 @@ body,
 }
 
 .header h1 {
-  max-width: 300px;
   margin: 0;
   font-size: 30px;
   font-weight: 700;
   line-height: 1.15;
+  white-space: nowrap;
+}
+
+.credit {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.credit a {
+  color: inherit;
+  text-underline-offset: 3px;
+}
+
+.credit a:hover {
+  color: var(--text);
+}
+
+/* Filters: a collapsible panel at the top right */
+
+.filters-panel {
+  position: absolute;
+  top: var(--panel-inset);
+  right: var(--panel-inset);
+  z-index: 2;
+  max-width: calc(100% - 2 * var(--panel-inset));
+}
+
+.filters-panel.collapsed {
+  border-radius: 20px;
+}
+
+.filters-toggle {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  height: 40px;
+  padding: 0 14px 0 18px;
+  border: 0;
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  font-family: var(--sans);
+  font-size: 16px;
+  font-weight: 600;
+  background: none;
+  cursor: pointer;
+}
+
+.filters-panel.collapsed .filters-toggle {
+  height: 38px;
+  border-radius: 20px;
+}
+
+.filters-toggle:hover {
+  background: rgb(255 255 255 / 7%);
+}
+
+.filters-toggle:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: -2px;
+}
+
+.filters-toggle svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-left: auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .filters {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px 32px;
-  align-items: baseline;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
   min-width: 0;
-  font-family: var(--mono);
+  padding: 4px 18px 16px;
+  font-family: var(--sans);
   font-size: 18px;
   line-height: 1.3;
 }
 
-.filters-label {
-  font-weight: 600;
+.filters .menu {
+  max-width: 100%;
+}
+
+.filters .menu-button {
+  max-width: 280px;
+}
+
+/* Where there's no room beside the header, the filters drop below it. */
+@media (max-width: 1000px) {
+  .filters-panel {
+    top: calc(var(--header-bottom, 120px) + 8px);
+  }
 }
 
 .menu-clear {
@@ -362,10 +448,12 @@ body,
   font-size: 16px;
   font-variant-numeric: tabular-nums;
   line-height: 1.35;
+  margin: 0;
 }
 
-.summary p {
-  margin: 0;
+.summary-divider {
+  margin: 0 10px;
+  color: var(--text-muted);
 }
 
 .summary strong {
@@ -432,7 +520,7 @@ body,
 }
 
 .menu-panel {
-  --menu-height: min(522px, calc(100dvh - var(--panel-top, 80px) - 76px));
+  --menu-height: min(522px, calc(100dvh - var(--panel-screen-top, 80px) - 76px));
   position: fixed;
   top: var(--panel-top, 80px);
   left: var(--panel-left, 16px);
@@ -664,9 +752,10 @@ body,
   outline: none;
 }
 
+/* The popup takes focus when it opens; its stroke brightens rather than drawing an
+   outline outside its rounded edge. */
 .popup:focus-visible {
-  outline: 2px solid var(--text);
-  outline-offset: 2px;
+  border-color: var(--text-muted);
 }
 
 :where(.popup) p {
@@ -859,6 +948,10 @@ body,
 .popup-row-place {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.popup-fact .swatch {
+  margin-right: 8px;
 }
 
 .popup-row-place .swatch {
@@ -1288,16 +1381,12 @@ body,
   }
 
   .header h1 {
-    font-size: 22px;
+    font-size: min(22px, 5.6vw);
   }
 
   .filters {
-    gap: 4px 18px;
+    gap: 8px;
     font-size: 16px;
-  }
-
-  .filters-label {
-    flex-basis: 100%;
   }
 
   .menu-button {
@@ -1305,8 +1394,6 @@ body,
   }
 
   .summary {
-    display: flex;
-    gap: 16px;
     font-size: 14px;
   }
 
