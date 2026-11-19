@@ -1,6 +1,8 @@
 # Large source data is too big for GitHub. See the README to rebuild public/data.
 raw-data/GEDEvent_*.csv
 raw-data/PRISMA_SR_50M/
+# Natural Earth vectors and the PRISMA hillshade, about 400 MB. See the README.
+raw-data/revised-natural-earth/
 # Local ArcGIS Pro project used for exploring the data.
 gis/
 

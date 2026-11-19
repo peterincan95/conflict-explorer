@@ -3,6 +3,7 @@ export const COPY = {
   pageTitle: "Global Conflict Fatalities",
   title: "Global Conflict Fatalities: 1989-2026",
   filterBy: "Filter By:",
+  clearFilter: (name: string) => `Clear ${name.toLowerCase()} filter`,
   events: "events",
   fatalities: "fatalities",
   loading: "Loading conflict events",
@@ -18,6 +19,12 @@ export const COPY = {
     columns: ["Regions", "Countries", "Provinces", "Districts"],
     search: "Search regions, countries, provinces and districts",
     noDivisions: "No smaller areas recorded",
+  },
+  actor: {
+    button: "Actor",
+    all: "All actors",
+    columns: ["Actors"],
+    search: "Search actors",
   },
   conflict: {
     button: "Conflict",
@@ -44,6 +51,9 @@ export const COPY = {
     best: "Best estimate",
     range: "Range",
     colorByType: "Color points by conflict type",
+    hillshade: "Hillshade",
+    places: "Populated places",
+    labels: "Labels",
   },
   legend: {
     title: "Legend",
@@ -52,18 +62,48 @@ export const COPY = {
   },
 
   boxSelect: "Box select",
-  labels: "Labels",
   clearBox: "Clear box",
   resetView: "Reset view",
   drawHint: "Drag on the map to draw a box",
 
-  topEvents: {
-    title: "Deadliest events",
-    show: "Show deadliest events",
-    hide: "Hide deadliest events",
-    showMore: "Show more",
+  popup: {
+    label: "Event details",
+    close: "Close",
+    showList: "Show all events here",
+    hideList: "Back to the event",
+    previous: "Previous event",
+    next: "Next event",
+    position: (index: number, count: number) => `${index} / ${count}`,
+    listTitle: (count: string) => `${count} events here`,
+    types: { 1: "state-based conflict", 2: "non-state conflict", 3: "violence against civilians" },
+    /**
+     * The sentence about an event. `link` turns text into a link, and the deaths come
+     * as a best estimate or a range.
+     */
+    summary: <T>(
+      type: string,
+      link: (text: string, kind: "conflict" | "sideA" | "sideB") => T,
+      sideA: string,
+      sideB: string,
+      deaths: string,
+      isRange: boolean,
+      isOne: boolean,
+    ) => [
+      `This instance of ${type} was part of a `,
+      link("conflict", "conflict"),
+      " between ",
+      link(sideA, "sideA"),
+      " and ",
+      link(sideB, "sideB"),
+      ` and resulted in ${isRange ? "an estimated" : "approximately"} ${deaths} ${isOne ? "fatality" : "fatalities"}.`,
+    ],
     deaths: (count: string, isOne: boolean) => `${count} ${isOne ? "death" : "deaths"}`,
-    zoomTo: "Zoom to this event",
+    source: "Source:",
+    loadingSource: "Loading…",
+    moreSource: "More",
+    lessSource: "Less",
+    noSource: "Not recorded",
+    provisional: "Provisional: from UCDP's monthly candidate data, which may still change.",
   },
 
   timeline: {

@@ -3,7 +3,7 @@
 Reads   raw-data/GEDEvent_v26_1.csv          (final data, 1989-2025)
         raw-data/GEDEvent_v26_01_26_09.csv   (provisional candidate data, 2026)
 Writes  public/data/events.bin, public/data/attrs.bin, public/data/details.bin,
-        public/data/places.json, public/data/meta.json
+        public/data/places.json, public/data/meta.json, public/data/sources/*.json
 
 events.bin holds 12 bytes per event, little-endian, for the GPU:
   uint16 x       Equal Earth x, scaled from -xMax..xMax to 0..65535
@@ -27,6 +27,10 @@ details.bin holds what only the summary and totals need, in the same order:
   uint32 high[count]      UCDP's high estimate of deaths, at least the best
   uint32 place[count]     index into places.json, the event's place name
 
+sources/<n>.json holds UCDP's source citation for events n * SOURCE_CHUNK up to
+(n + 1) * SOURCE_CHUNK, as a list of strings. The app fetches one only when it shows
+an event from it.
+
 Events are sorted by start day. Ids index the lists in meta.json; division
 id 0 is a placeholder for "none".
 """
@@ -47,10 +51,12 @@ SOURCES = [
 COLUMNS = [
     "id", "conflict_name", "side_a", "side_b", "adm_1", "adm_2", "country", "region",
     "latitude", "longitude", "date_start", "date_end", "best", "low", "high", "type_of_violence",
-    "where_coordinates",
+    "where_coordinates", "source_article",
 ]
 EPOCH = pd.Timestamp("1989-01-01")
 PROVISIONAL = 1
+# Events per source citation file. About 500 KB a file, 150 KB gzipped.
+SOURCE_CHUNK = 4096
 
 # Equal Earth (Šavrič, Patterson & Jenny, 2018).
 A1, A2, A3, A4 = 1.340264, -0.081106, 0.000893, 0.003796
@@ -198,6 +204,7 @@ def main():
         ],
         "actors": actors,
         "conflicts": conflicts,
+        "sourceChunk": SOURCE_CHUNK,
     }
 
     OUT.mkdir(parents=True, exist_ok=True)
@@ -206,6 +213,16 @@ def main():
     (OUT / "details.bin").write_bytes(details)
     (OUT / "places.json").write_text(json.dumps(places, separators=(",", ":"), ensure_ascii=False),
                                      encoding="utf-8")
+    source_dir = OUT / "sources"
+    source_dir.mkdir(exist_ok=True)
+    for old in source_dir.glob("*.json"):
+        old.unlink()
+    sources = events["source_article"].fillna("").str.strip().tolist()
+    for chunk, first in enumerate(range(0, count, SOURCE_CHUNK)):
+        (source_dir / f"{chunk}.json").write_text(
+            json.dumps(sources[first:first + SOURCE_CHUNK], separators=(",", ":"), ensure_ascii=False),
+            encoding="utf-8",
+        )
     (OUT / "meta.json").write_text(json.dumps(meta, separators=(",", ":"), ensure_ascii=False),
                                    encoding="utf-8")
     provisional = int((events["flags"] & PROVISIONAL).astype(bool).sum())

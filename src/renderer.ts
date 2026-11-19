@@ -1,4 +1,12 @@
-import { BYTES_PER_EVENT, VIOLENCE_TYPES, type EventData, type Meta, type ViolenceType } from "./data";
+import {
+  BYTES_PER_EVENT,
+  VIOLENCE_TYPES,
+  type EventData,
+  type LineCounts,
+  type LineDetail,
+  type Meta,
+  type ViolenceType,
+} from "./data";
 import { GRID_MAX, type Area, type DayWindow } from "./selection";
 
 /** The map's view: `x` and `y` are the share of the world at the panel's center. */
@@ -33,15 +41,15 @@ interface Resources {
   emptyVao: WebGLVertexArrayObject;
 }
 
-/** Country outlines uploaded as pairs of vertices, one pair per line segment. */
-interface OutlineLines {
+/** Basemap lines uploaded as pairs of vertices, one pair per segment, coastlines first. */
+interface BasemapLines {
   vao: WebGLVertexArrayObject;
-  vertexCount: number;
+  counts: LineCounts;
 }
 
 interface Targets {
   density: Target;
-  outlines: Target;
+  lines: Target;
   nearA: Target;
   nearB: Target;
   farA: Target;
@@ -50,7 +58,7 @@ interface Targets {
 
 // Point colors from the sparsest to the densest areas, evenly spaced after black, which
 // keeps empty areas matching the background.
-export const DEFAULT_GRADIENT = ["#893426", "#e67f0e", "#faba58", "#fff3da"];
+export const DEFAULT_GRADIENT = ["#5c0a12", "#d0101f", "#ff3646", "#ffe2df"];
 
 /** Point colors by type of violence: state-based, non-state and one-sided. */
 export const TYPE_COLORS: Record<ViolenceType, string> = {
@@ -73,6 +81,12 @@ const hexChannels = (hex: string) =>
 
 const MAX_PIXEL_RATIO = 2;
 const MAP_FILL = 0.96;
+// Equal Earth's constants, matching scripts/prep_data.py, written as GLSL floats.
+const A1 = "1.340264";
+const A2 = "-0.081106";
+const A3 = "0.000893";
+const A4 = "0.003796";
+const M = (Math.sqrt(3) / 2).toFixed(7);
 
 // Width in CSS pixels of an event with no recorded deaths. Sizes between whole pixels
 // are drawn by lighting the edge pixels by how much of them the point covers.
@@ -119,8 +133,23 @@ const DEFAULT_BRIGHTNESS = 1;
 // Events outside a drawn box are drawn this bright, and lose this share of their color.
 const UNSELECTED_WEIGHT = 0.16;
 const UNSELECTED_DESATURATION = 0.5;
-// Country outlines show under the points, in gray, this bright.
-const OUTLINE_BRIGHTNESS = 0.24;
+// The basemap's gray for land and water alike, before relief. Outside the map is black.
+const BASE_GRAY = 0.074;
+// Relief lightens slopes facing the light by this much for each step brighter than
+// flat ground, as a share of flat ground's gray, and darkens shaded ones by this much.
+const RELIEF_LIGHT = 11;
+const RELIEF_SHADE = 2.6;
+// The relief fades out as the map zooms from the first of these to the second, past
+// the zoom that shows a whole country, where the image would turn blurry.
+export const RELIEF_FADE_ZOOMS = [12, 24];
+// Line grays: coastlines, country borders and province borders. Province borders fade
+// in between these zooms.
+const COAST_GRAY = 0.2;
+const BORDER_GRAY = 0.24;
+const PROVINCE_GRAY = 0.14;
+const PROVINCE_FADE_ZOOMS = [1.5, 3];
+/** Past this zoom the map switches to the detailed lines, once they've loaded. */
+export const DETAIL_LINE_ZOOM = 5;
 const NEAR_GLOW = 0.3;
 const FAR_GLOW = 0.75;
 
@@ -263,7 +292,14 @@ in vec2 v_uv;
 uniform sampler2D u_density;
 uniform sampler2D u_near;
 uniform sampler2D u_far;
-uniform sampler2D u_outlines;
+uniform sampler2D u_lines;
+uniform sampler2D u_hillshade;
+uniform float u_hasHillshade;
+uniform float u_relief;
+uniform float u_flat;
+// Screen to the world's share: world = (screen * 2 - 1 - offset) / scale.
+uniform vec4 u_projection;
+uniform vec2 u_extent;
 uniform float u_nearGlow;
 uniform float u_farGlow;
 uniform float u_outsideDesaturation;
@@ -279,6 +315,38 @@ vec3 gradient(float value) {
   return mix(u_stops[stop], u_stops[stop + 1], position - float(stop));
 }
 float noise(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
+// How far inside the Equal Earth outline a spot is, in the projection's units: below 0
+// is outside.
+float insideMap(vec2 world) {
+  float x = (world.x * 2.0 - 1.0) * u_extent.x;
+  float y = (world.y * 2.0 - 1.0) * u_extent.y;
+  float theta = clamp(y, -u_extent.y, u_extent.y) / ${A1};
+  for (int step = 0; step < 6; step += 1) {
+    float t2 = theta * theta;
+    float t6 = t2 * t2 * t2;
+    float f = theta * (${A1} + ${A2} * t2 + t6 * (${A3} + ${A4} * t2)) - clamp(y, -u_extent.y, u_extent.y);
+    theta -= f / (${A1} + 3.0 * ${A2} * t2 + t6 * (7.0 * ${A3} + 9.0 * ${A4} * t2));
+  }
+  float t2 = theta * theta;
+  float t6 = t2 * t2 * t2;
+  float edge = ${Math.PI} * cos(theta) / (${M} * (${A1} + 3.0 * ${A2} * t2 + t6 * (7.0 * ${A3} + 9.0 * ${A4} * t2)));
+  return min(edge - abs(x), u_extent.y - abs(y));
+}
+vec3 basemap() {
+  vec2 world = (v_uv * 2.0 - 1.0 - u_projection.zw) / u_projection.xy;
+  float inside = insideMap(world);
+  // Half a screen pixel of blending at the edge.
+  float pixel = fwidth(world.x) * u_extent.x;
+  float onMap = smoothstep(-pixel, pixel, inside);
+  float gray = ${BASE_GRAY.toFixed(3)};
+  if (u_hasHillshade > 0.5) {
+    float shade = texture(u_hillshade, vec2(world.x, 1.0 - world.y)).r / u_flat - 1.0;
+    float relief = shade > 0.0 ? shade * ${RELIEF_LIGHT.toFixed(3)} : shade * ${RELIEF_SHADE.toFixed(3)};
+    gray *= max(1.0 + relief * u_relief, 0.0);
+  }
+  float lines = texture(u_lines, v_uv).r;
+  return vec3(max(gray, lines) * onMap);
+}
 void main() {
   vec4 core = toned(texture(u_density, v_uv));
   vec4 near = texture(u_near, v_uv) * u_nearGlow;
@@ -309,10 +377,43 @@ void main() {
   float outside = (core.a + near.a + far.a) / max(core.r + near.r + far.r, 1e-6);
   float gray = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
   rgb = mix(rgb, vec3(gray), clamp(outside, 0.0, 1.0) * u_outsideDesaturation);
-  // Outlines show where the points are dimmer than they are.
-  rgb = max(rgb, vec3(texture(u_outlines, v_uv).r));
+  // Points light up the basemap under them.
+  rgb = 1.0 - (1.0 - rgb) * (1.0 - basemap());
   color = vec4(rgb, 1.0);
 }`;
+
+/** 0 below the first zoom, 1 past the second, eased between, with zooms compared by doubling. */
+function smoothstep([from, to]: number[], zoom: number) {
+  const t = Math.min(1, Math.max(0, Math.log2(zoom / from!) / Math.log2(to! / from!)));
+  return t * t * (3 - 2 * t);
+}
+
+/** The part of the map panel left open by the panels floating over it, in CSS pixels. */
+export interface MapFrame {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * How the world sits on the map panel: the share of the panel's width and height it
+ * fills at the home view, and the share across and down where the view's center sits.
+ * The world fits the frame, and the camera centers on the frame's middle.
+ */
+export interface MapLayout {
+  fill: [number, number];
+  center: [number, number];
+}
+
+export function mapLayout(extent: Meta["extent"], width: number, height: number, frame: MapFrame | null): MapLayout {
+  const open = frame && frame.width > 0 && frame.height > 0 ? frame : { left: 0, top: 0, width, height };
+  const fill = mapFill(extent, open.width, open.height);
+  return {
+    fill: [(fill[0] * open.width) / width, (fill[1] * open.height) / height],
+    center: [(open.left + open.width / 2) / width, (open.top + open.height / 2) / height],
+  };
+}
 
 /** The share of the panel's width and height the world fills, keeping it undistorted. */
 export function mapFill({ xMax, yMax }: Meta["extent"], width: number, height: number): [number, number] {
@@ -399,10 +500,15 @@ export class EventRenderer {
   private window: DayWindow = { from: 0, to: 0 };
   private area: Area = { west: 0, east: GRID_MAX, south: 0, north: GRID_MAX };
   private camera: Camera = { zoom: 1, x: 0.5, y: 0.5 };
+  private openFrame: MapFrame | null = null;
   private frame = 0;
   private maxPointSize = 64;
-  private outlines: Uint16Array | null = null;
-  private outlineLines: OutlineLines | null = null;
+  private lineData: Partial<Record<LineDetail, { segments: Uint16Array; counts: LineCounts }>> = {};
+  private lines: Partial<Record<LineDetail, BasemapLines>> = {};
+  private hillshadeImage: TexImageSource | null = null;
+  private hillshade: { texture: WebGLTexture; flat: number } | null = null;
+  private flatShade = 1;
+  private showRelief = true;
   private gradient = new Float32Array(gradientStops(DEFAULT_GRADIENT).flatMap(hexChannels));
   private typeColors = new Float32Array(VIOLENCE_TYPES.flatMap((type) => hexChannels(TYPE_COLORS[type])));
   private colorByType = false;
@@ -478,10 +584,32 @@ export class EventRenderer {
     this.requestDraw();
   }
 
-  /** Country outlines, as segment endpoints on the events' grid. */
-  setOutlines(outlines: Uint16Array) {
-    this.outlines = outlines;
-    this.uploadOutlines();
+  /** Basemap lines at one level of detail, as segment endpoints on the events' grid. */
+  setLines(detail: LineDetail, segments: Uint16Array, counts: LineCounts) {
+    this.lineData[detail] = { segments, counts };
+    this.uploadLines();
+    this.requestDraw();
+  }
+
+  /**
+   * The hillshade in Equal Earth, gray, with flat ground and water at `flat`, out of 255.
+   */
+  setHillshade(image: TexImageSource, flat: number) {
+    this.hillshadeImage = image;
+    this.flatShade = flat / 255;
+    this.uploadHillshade();
+    this.requestDraw();
+  }
+
+  /** Shows or hides the relief. */
+  setReliefVisible(isVisible: boolean) {
+    this.showRelief = isVisible;
+    this.requestDraw();
+  }
+
+  /** The part of the panel the world fits in, or null for all of it. */
+  setFrame(frame: MapFrame | null) {
+    this.openFrame = frame;
     this.requestDraw();
   }
 
@@ -511,8 +639,10 @@ export class EventRenderer {
     this.createResources();
     this.createTargets();
     this.uploadVisible();
-    this.outlineLines = null;
-    this.uploadOutlines();
+    this.lines = {};
+    this.uploadLines();
+    this.hillshade = null;
+    this.uploadHillshade();
     this.requestDraw();
   };
 
@@ -568,7 +698,13 @@ export class EventRenderer {
         "u_farGlow",
         "u_stops",
         "u_outsideDesaturation",
-        "u_outlines",
+        "u_lines",
+        "u_hillshade",
+        "u_hasHillshade",
+        "u_relief",
+        "u_flat",
+        "u_projection",
+        "u_extent",
         "u_colorByType",
         "u_typeColors",
       ]),
@@ -579,17 +715,46 @@ export class EventRenderer {
     };
   }
 
-  private uploadOutlines() {
-    const { gl, outlines } = this;
-    if (!outlines || !this.resources || this.outlineLines) return;
-    const vao = gl.createVertexArray()!;
-    gl.bindVertexArray(vao);
-    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
-    gl.bufferData(gl.ARRAY_BUFFER, outlines, gl.STATIC_DRAW);
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 2, gl.UNSIGNED_SHORT, true, 0, 0);
-    gl.bindVertexArray(null);
-    this.outlineLines = { vao, vertexCount: outlines.length / 2 };
+  private uploadLines() {
+    const { gl } = this;
+    if (!this.resources) return;
+    for (const [detail, data] of Object.entries(this.lineData) as [LineDetail, typeof this.lineData.coarse][]) {
+      if (!data || this.lines[detail]) continue;
+      const vao = gl.createVertexArray()!;
+      gl.bindVertexArray(vao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+      gl.bufferData(gl.ARRAY_BUFFER, data.segments, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 2, gl.UNSIGNED_SHORT, true, 0, 0);
+      gl.bindVertexArray(null);
+      this.lines[detail] = { vao, counts: data.counts };
+    }
+  }
+
+  private uploadHillshade() {
+    const { gl, hillshadeImage } = this;
+    if (!hillshadeImage || !this.resources || this.hillshade) return;
+    let source = hillshadeImage;
+    // Smaller GPUs get a smaller copy.
+    const maxSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
+    const { width, height } = hillshadeImage as { width: number; height: number };
+    if (width > maxSize) {
+      const canvas = document.createElement("canvas");
+      canvas.width = maxSize;
+      canvas.height = Math.round((height * maxSize) / width);
+      canvas.getContext("2d")!.drawImage(hillshadeImage as CanvasImageSource, 0, 0, canvas.width, canvas.height);
+      source = canvas;
+    }
+    const texture = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, gl.RED, gl.UNSIGNED_BYTE, source);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.hillshade = { texture, flat: this.flatShade };
   }
 
   private uploadVisible() {
@@ -611,7 +776,7 @@ export class EventRenderer {
       ] as const;
     this.targets = {
       density: createTarget(gl, canvas.width, canvas.height),
-      outlines: createTarget(gl, canvas.width, canvas.height, gl.R8),
+      lines: createTarget(gl, canvas.width, canvas.height, gl.R8),
       nearA: createTarget(gl, ...size(4)),
       nearB: createTarget(gl, ...size(4)),
       farA: createTarget(gl, ...size(16)),
@@ -644,7 +809,7 @@ export class EventRenderer {
     gl.blendFunc(gl.ONE, gl.ONE);
 
     const { zoom, x, y } = this.camera;
-    const fill = mapFill(this.data.meta.extent, this.width, this.height);
+    const { fill, center } = mapLayout(this.data.meta.extent, this.width, this.height, this.openFrame);
     const growth = zoomGrowth(zoom);
     const pointSize = Math.max(0.5, POINT_SIZE * growth * pixelRatio);
     const lightSize = Math.max(0.5, LIGHT_BASE_SIZE * growth * pixelRatio);
@@ -656,7 +821,9 @@ export class EventRenderer {
     const scaleX = 2 * fill[0] * zoom;
     const scaleY = 2 * fill[1] * zoom;
     gl.uniform2f(uniforms.u_scale!, scaleX, scaleY);
-    gl.uniform2f(uniforms.u_offset!, -scaleX * x, -scaleY * y);
+    const offsetX = 2 * center[0] - 1 - scaleX * x;
+    const offsetY = 1 - 2 * center[1] - scaleY * y;
+    gl.uniform2f(uniforms.u_offset!, offsetX, offsetY);
     gl.uniform2f(uniforms.u_window!, this.window.from, this.window.to);
     // Half a grid step past each edge, so rounding can't drop events on the edge.
     const { west, east, south, north } = this.area;
@@ -677,27 +844,38 @@ export class EventRenderer {
     gl.uniform1f(uniforms.u_weight!, weight);
     gl.uniform2f(uniforms.u_roundSizes!, ROUND_POINT_SIZES[0]!, ROUND_POINT_SIZES[1]!);
     gl.drawArrays(gl.POINTS, 0, this.data.meta.count);
-    this.drawOutlines(resources, targets, [scaleX, scaleY, -scaleX * x, -scaleY * y]);
+    const projection = [scaleX, scaleY, offsetX, offsetY];
+    this.drawLines(resources, targets, projection);
 
     gl.disable(gl.BLEND);
-    this.drawGlow(resources, targets);
+    this.drawGlow(resources, targets, projection);
   }
 
-  /** Draws the outlines into their own buffer, which the composite lays under the points. */
-  private drawOutlines(resources: Resources, targets: Targets, projection: number[]) {
-    const { gl, outlineLines } = this;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, targets.outlines.framebuffer);
+  /** Draws the basemap lines into their own buffer, which the composite lays under the points. */
+  private drawLines(resources: Resources, targets: Targets, projection: number[]) {
+    const { gl } = this;
+    const { zoom } = this.camera;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, targets.lines.framebuffer);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    if (!outlineLines) return;
+    const set = (zoom >= DETAIL_LINE_ZOOM && this.lines.fine) || this.lines.coarse;
+    if (!set) return;
     const { lines } = resources;
     gl.useProgram(lines.program);
-    gl.bindVertexArray(outlineLines.vao);
+    gl.bindVertexArray(set.vao);
     gl.uniform2f(lines.uniforms.u_scale!, projection[0]!, projection[1]!);
     gl.uniform2f(lines.uniforms.u_offset!, projection[2]!, projection[3]!);
-    gl.uniform1f(lines.uniforms.u_brightness!, OUTLINE_BRIGHTNESS);
-    // Where borders overlap, they keep one line's brightness rather than adding up.
+    // Where lines overlap, they keep the brightest one's gray rather than adding up.
     gl.blendEquation(gl.MAX);
-    gl.drawArrays(gl.LINES, 0, outlineLines.vertexCount);
+    const { coast, border, province } = set.counts;
+    const provinceGray = PROVINCE_GRAY * smoothstep(PROVINCE_FADE_ZOOMS, zoom);
+    const draw = (gray: number, first: number, count: number) => {
+      if (gray <= 0 || count === 0) return;
+      gl.uniform1f(lines.uniforms.u_brightness!, gray);
+      gl.drawArrays(gl.LINES, first * 2, count * 2);
+    };
+    draw(provinceGray, coast + border, province);
+    draw(COAST_GRAY, 0, coast);
+    draw(BORDER_GRAY, coast, border);
     gl.blendEquation(gl.FUNC_ADD);
   }
 
@@ -708,7 +886,7 @@ export class EventRenderer {
     return POINT_WEIGHT * Math.min(1, (FULL_WEIGHT_COVERAGE / coverage) ** WEIGHT_FALLOFF);
   }
 
-  private drawGlow(resources: Resources, targets: Targets) {
+  private drawGlow(resources: Resources, targets: Targets, projection: number[]) {
     const { gl } = this;
     const { downsample, blur, composite, emptyVao } = resources;
     gl.bindVertexArray(emptyVao);
@@ -751,8 +929,18 @@ export class EventRenderer {
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, targets.farA.texture);
     gl.activeTexture(gl.TEXTURE3);
-    gl.bindTexture(gl.TEXTURE_2D, targets.outlines.texture);
-    gl.uniform1i(composite.uniforms.u_outlines!, 3);
+    gl.bindTexture(gl.TEXTURE_2D, targets.lines.texture);
+    gl.uniform1i(composite.uniforms.u_lines!, 3);
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, this.hillshade?.texture ?? null);
+    gl.uniform1i(composite.uniforms.u_hillshade!, 4);
+    gl.uniform1f(composite.uniforms.u_hasHillshade!, this.hillshade ? 1 : 0);
+    gl.uniform1f(composite.uniforms.u_flat!, this.hillshade?.flat ?? 1);
+    const relief = this.showRelief ? 1 - smoothstep(RELIEF_FADE_ZOOMS, this.camera.zoom) : 0;
+    gl.uniform1f(composite.uniforms.u_relief!, relief);
+    gl.uniform4f(composite.uniforms.u_projection!, projection[0]!, projection[1]!, projection[2]!, projection[3]!);
+    const { xMax, yMax } = this.data.meta.extent;
+    gl.uniform2f(composite.uniforms.u_extent!, xMax, yMax);
     gl.uniform1i(composite.uniforms.u_density!, 0);
     gl.uniform1i(composite.uniforms.u_near!, 1);
     gl.uniform1i(composite.uniforms.u_far!, 2);

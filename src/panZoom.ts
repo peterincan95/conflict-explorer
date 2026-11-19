@@ -31,6 +31,7 @@ export class PanZoom {
   private width = 1;
   private height = 1;
   private fill: readonly [number, number] = [1, 1];
+  private center: readonly [number, number] = [0.5, 0.5];
   private isEnabled = true;
   private isLocked = false;
   private pointers = new Map<number, Pointer>();
@@ -59,11 +60,20 @@ export class PanZoom {
     this.plot.removeEventListener("pointercancel", this.onPointerEnd);
   }
 
-  /** `fill` is how much of the plot's width and height the data covers at the home view. */
-  setLayout(width: number, height: number, fill: readonly [number, number]) {
+  /**
+   * `fill` is how much of the plot's width and height the data covers at the home view,
+   * and `center` is the share of the plot across and down where the camera's center sits.
+   */
+  setLayout(
+    width: number,
+    height: number,
+    fill: readonly [number, number],
+    center: readonly [number, number] = [0.5, 0.5],
+  ) {
     this.width = width;
     this.height = height;
     this.fill = fill;
+    this.center = center;
     this.moveTo(this.camera);
   }
 
@@ -122,13 +132,13 @@ export class PanZoom {
   /** The share of the data under a share of the plot's width. */
   dataX(share: number) {
     const { x, zoom } = this.camera;
-    return x + (share - 0.5) / (this.fill[0] * zoom);
+    return x + (share - this.center[0]) / (this.fill[0] * zoom);
   }
 
   /** The share of the data under a share of the plot's height, from its top. */
   dataY(share: number) {
     const { y, zoom } = this.camera;
-    return y + (this.yDirection * (share - 0.5)) / (this.fill[1] * zoom);
+    return y + (this.yDirection * (share - this.center[1])) / (this.fill[1] * zoom);
   }
 
   /** Keeps the data in view: its edges can only move a little inside the plot's edges. */
@@ -154,8 +164,8 @@ export class PanZoom {
     const dataY = this.dataY(shareY);
     this.moveTo({
       zoom,
-      x: dataX - (shareX - 0.5) / (this.fill[0] * zoom),
-      y: dataY - (this.yDirection * (shareY - 0.5)) / (this.fill[1] * zoom),
+      x: dataX - (shareX - this.center[0]) / (this.fill[0] * zoom),
+      y: dataY - (this.yDirection * (shareY - this.center[1])) / (this.fill[1] * zoom),
     });
   }
 

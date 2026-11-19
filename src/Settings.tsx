@@ -3,20 +3,25 @@ import { COPY } from "./copy";
 
 export type FatalityMode = "best" | "range";
 
+/** The map's on-off options. */
+export interface MapToggles {
+  colorByType: boolean;
+  hillshade: boolean;
+  places: boolean;
+  labels: boolean;
+}
+
 interface SettingsProps {
   fatalityMode: FatalityMode;
   onFatalityModeChange: (mode: FatalityMode) => void;
-  colorByType: boolean;
-  onColorByTypeChange: (isOn: boolean) => void;
+  toggles: MapToggles;
+  onTogglesChange: (toggles: MapToggles) => void;
 }
 
+const TOGGLE_ORDER: (keyof MapToggles)[] = ["colorByType", "hillshade", "places", "labels"];
+
 /** A gear button that opens the map's display options. */
-export function Settings({
-  fatalityMode,
-  onFatalityModeChange,
-  colorByType,
-  onColorByTypeChange,
-}: SettingsProps) {
+export function Settings({ fatalityMode, onFatalityModeChange, toggles, onTogglesChange }: SettingsProps) {
   const [isOpen, setIsOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
@@ -84,18 +89,21 @@ export function Settings({
               ))}
             </div>
           </div>
-          <button
-            type="button"
-            className="settings-option settings-switch"
-            role="switch"
-            aria-checked={colorByType}
-            onClick={() => onColorByTypeChange(!colorByType)}
-          >
-            <span className="settings-label">{COPY.settings.colorByType}</span>
-            <span className="switch-track" aria-hidden="true">
-              <span className="switch-thumb" />
-            </span>
-          </button>
+          {TOGGLE_ORDER.map((key) => (
+            <button
+              key={key}
+              type="button"
+              className="settings-option settings-switch"
+              role="switch"
+              aria-checked={toggles[key]}
+              onClick={() => onTogglesChange({ ...toggles, [key]: !toggles[key] })}
+            >
+              <span className="settings-label">{COPY.settings[key]}</span>
+              <span className="switch-track" aria-hidden="true">
+                <span className="switch-thumb" />
+              </span>
+            </button>
+          ))}
         </div>
       )}
     </div>

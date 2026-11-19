@@ -382,24 +382,21 @@ export function Timeline({
           {!isOpen && <span>{COPY.timeline.title}</span>}
         </button>
         {isOpen && (
-          <>
-            <h2 className="timeline-title">{COPY.timeline.title}</h2>
-            <div className="range-pills">
-              <button
-                type="button"
-                className="pill pill-icon"
-                aria-label={COPY.timeline.reset}
-                title={COPY.timeline.reset}
-                disabled={!canReset}
-                onClick={onReset}
-              >
-                <svg viewBox="0 0 16 16" aria-hidden="true">
-                  <path d="M3.5 6.5a5 5 0 1 1-.2 3.2" />
-                  <path d="M3 2.5v4h4" />
-                </svg>
-              </button>
-            </div>
-          </>
+          <div className="range-pills">
+            <button
+              type="button"
+              className="pill pill-icon"
+              aria-label={COPY.timeline.reset}
+              title={COPY.timeline.reset}
+              disabled={!canReset}
+              onClick={onReset}
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M3.5 6.5a5 5 0 1 1-.2 3.2" />
+                <path d="M3 2.5v4h4" />
+              </svg>
+            </button>
+          </div>
         )}
       </div>
 
