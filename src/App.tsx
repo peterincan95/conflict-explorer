@@ -1,9 +1,9 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { BoxOutline, useBoxDraw, type Box } from "./box";
 import { ColumnMenu } from "./ColumnMenu";
 import { COPY } from "./copy";
+import { EventPopup } from "./EventPopup";
 import {
-  formatDays,
   loadDetails,
   loadEvents,
   loadBasemap,
@@ -13,7 +13,6 @@ import {
   VIOLENCE_TYPES,
   type Details,
   type EventData,
-  type ViolenceType,
 } from "./data";
 import {
   buildListMenu,
@@ -23,10 +22,13 @@ import {
   type LocationFilter,
 } from "./filters";
 import { Legend } from "./Legend";
+import { formatDeaths, formatToll, numberFormat } from "./format";
 import { MapView } from "./mapView";
+import { EventPicker } from "./picking";
 import { DEFAULT_GRADIENT, DETAIL_LINE_ZOOM, EventRenderer, TYPE_COLORS } from "./renderer";
 import { Settings, type FatalityMode, type MapToggles } from "./Settings";
 import {
+  countActors,
   countConflicts,
   countLocations,
   fatalitiesByMonth,
@@ -34,45 +36,26 @@ import {
   filteredBounds,
   filteredDays,
   monthOfDay,
-  topEvents,
   totals,
   WHOLE_WORLD,
   type Area,
   type DayWindow,
   type Filters,
   type MenuCounts,
-  type Toll,
 } from "./selection";
 import { MIN_VIEW_DAYS, Timeline, type ChartSeries, type DayView, type MonthRange } from "./Timeline";
-import { TopEvents, type TopEvent } from "./TopEvents";
 
 const ANNOUNCE_DELAY_MS = 600;
-// The deadliest events list starts this long and grows this much at a time.
-const TOP_EVENTS_STEP = 25;
 // Zooming the timeline to a filter leaves this share of its days either side.
 const VIEW_PADDING = 0.05;
-const numberFormat = new Intl.NumberFormat("en-US");
+// The space between the floating panels and the open part of the map, in CSS pixels,
+// which is also the space between them and the pills and legend at its edges.
+const PANEL_GAP = 16;
 
-/** "Al Fashir town, Sudan": the place, capitalized, then its country unless the place names it. */
-function placeName(place: string | undefined, country: string) {
-  if (!place) return country;
-  const capitalized = place[0]!.toUpperCase() + place.slice(1);
-  return place.toLowerCase().includes(country.toLowerCase()) ? capitalized : `${capitalized}, ${country}`;
-}
-
-const shortFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
-
-/** Deaths in full below a thousand, then in thousands or millions to one decimal: "121.8k", "4.4M". */
-export function formatDeaths(count: number) {
-  if (count >= 1_000_000) return `${shortFormat.format(count / 1_000_000)}M`;
-  if (count >= 1000) return `${shortFormat.format(count / 1000)}k`;
-  return numberFormat.format(count);
-}
-
-/** A death toll as its best estimate, or as its range when `isRange`. */
-function formatToll({ best, low, high }: Toll, isRange: boolean, format = numberFormat.format) {
-  if (!isRange) return format(best);
-  return low === high ? format(low) : `${format(low)}–${format(high)}`;
+/** Events open in the popup: the ones under a click, and the clicked spot. */
+interface Popup {
+  events: number[];
+  spot: { x: number; y: number };
 }
 
 export function App() {
@@ -119,16 +102,18 @@ function Explorer({ data }: { data: EventData }) {
   const fullView: DayView = [meta.months[0]!.day, meta.months[lastMonth]!.day];
 
   const locationMenu = useMemo(() => buildLocationMenu(meta), [meta]);
+  const actorMenu = useMemo(() => buildListMenu(meta.actors, COPY.actor), [meta]);
   const conflictMenu = useMemo(() => buildListMenu(meta.conflicts, COPY.conflict), [meta]);
+  const picker = useMemo(() => new EventPicker(data), [data]);
   const monthOf = useMemo(() => monthOfDay(meta), [meta]);
 
   const [location, setLocation] = useState<LocationFilter>(locationMenu[0]!.value!);
+  const [actor, setActor] = useState<ListFilter>(actorMenu[0]!.value!);
   const [conflict, setConflict] = useState<ListFilter>(conflictMenu[0]!.value!);
   const [range, setRange] = useState<MonthRange>(fullRange);
   const [timelineView, setTimelineView] = useState<DayView>(fullView);
-  const [topLimit, setTopLimit] = useState(TOP_EVENTS_STEP);
-  const [highlighted, setHighlighted] = useState<number | null>(null);
-  const [isSideOpen, setIsSideOpen] = useState(false);
+  const [popup, setPopup] = useState<Popup | null>(null);
+  const [shownEvent, setShownEvent] = useState<number | null>(null);
   const [area, setArea] = useState<Area>(WHOLE_WORLD);
   const [isDrawingBox, setIsDrawingBox] = useState(false);
   const [isMapMoved, setIsMapMoved] = useState(false);
@@ -148,6 +133,8 @@ function Explorer({ data }: { data: EventData }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const linesCanvas = useRef<HTMLCanvasElement>(null);
   const mapPlot = useRef<HTMLDivElement>(null);
+  const header = useRef<HTMLElement>(null);
+  const timelineDock = useRef<HTMLDivElement>(null);
   const startHandle = useRef<HTMLDivElement>(null);
   const renderer = useRef<EventRenderer | null>(null);
   const mapView = useRef<MapView | null>(null);
@@ -159,8 +146,8 @@ function Explorer({ data }: { data: EventData }) {
     [meta, range],
   );
   const filters: Filters = useMemo(
-    () => ({ location, conflict }),
-    [location, conflict],
+    () => ({ location, actor, conflict }),
+    [location, actor, conflict],
   );
 
   // Ranges show once the low and high estimates have loaded.
@@ -186,28 +173,12 @@ function Explorer({ data }: { data: EventData }) {
     [data, details, filtered, area, dayWindow],
   );
 
-  // One extra tells the list whether there are more to show.
-  const top = useMemo(
-    () => topEvents(data, filtered.visible, area, dayWindow, topLimit + 1),
-    [data, filtered, area, dayWindow, topLimit],
-  );
-  const topRows: TopEvent[] = top.slice(0, topLimit).map((index) => {
-    const country = meta.countries[data.attrs.country[index]!]!.name;
-    const place = details?.places[details.place[index]!];
-    const best = data.best[index]!;
-    const toll = { best, low: details?.low[index] ?? best, high: details?.high[index] ?? best };
-    const isOne = isRange ? toll.high === 1 : best === 1;
-    return {
-      index,
-      place: placeName(place, country),
-      date: formatDays(meta.epoch, data.start[index]!, data.end[index]!),
-      fatalities: COPY.topEvents.deaths(formatToll(toll, isRange, formatDeaths), isOne),
-      color: colorByType ? TYPE_COLORS[data.attrs.type[index] as ViolenceType] : null,
-    };
-  });
-
   const locationCounts = useMemo(
     () => lazyCounts(() => countLocations(data, details, filters, area, dayWindow)),
+    [data, details, filters, area, dayWindow],
+  );
+  const actorCounts = useMemo(
+    () => lazyCounts(() => countActors(data, details, filters, area, dayWindow)),
     [data, details, filters, area, dayWindow],
   );
   const conflictCounts = useMemo(
@@ -235,6 +206,10 @@ function Explorer({ data }: { data: EventData }) {
     renderer.current = current;
     const view = new MapView(mapPlot.current!, linesCanvas.current!, current, meta.extent, setIsMapMoved);
     mapView.current = view;
+    view.setPicking(picker, {
+      onPick: (events, spot) => setPopup({ events, spot }),
+      onMiss: () => setPopup(null),
+    });
     if (import.meta.env.DEV) Object.assign(globalThis, { eventRenderer: current, mapView: view });
 
     // The basemap comes after the points, and the map works without it. The detailed
@@ -273,13 +248,23 @@ function Explorer({ data }: { data: EventData }) {
       })
       .catch((reason: unknown) => console.warn("Death ranges and place names didn't load", reason));
 
+    // The map fills the window, and the world fits the open part between the header
+    // and timeline floating over it.
     const updateLayout = () => {
-      const { width, height } = mapPlot.current!.getBoundingClientRect();
-      current.setLayout(width, height);
-      view.setLayout(width, height);
+      const plot = mapPlot.current!.getBoundingClientRect();
+      const top = header.current!.getBoundingClientRect().bottom - plot.top + PANEL_GAP;
+      const bottom = timelineDock.current!.getBoundingClientRect().top - plot.top - PANEL_GAP;
+      current.setLayout(plot.width, plot.height);
+      view.setLayout(plot.width, plot.height);
+      view.setFrame({ left: 0, top, width: plot.width, height: Math.max(bottom - top, 1) });
+      const stage = mapPlot.current!.parentElement!;
+      stage.style.setProperty("--open-top", `${top}px`);
+      stage.style.setProperty("--open-bottom", `${plot.height - bottom}px`);
     };
     const observer = new ResizeObserver(updateLayout);
     observer.observe(mapPlot.current!);
+    observer.observe(header.current!);
+    observer.observe(timelineDock.current!);
     updateLayout();
 
     return () => {
@@ -290,16 +275,19 @@ function Explorer({ data }: { data: EventData }) {
       current.destroy();
       mapView.current = null;
       renderer.current = null;
+      setPopup(null);
     };
-  }, [data, meta]);
+  }, [data, meta, picker]);
 
   useLayoutEffect(() => {
     renderer.current?.setVisible(filtered.visible);
-  }, [filtered]);
+    picker.setVisible(filtered.visible);
+  }, [filtered, picker]);
 
   useLayoutEffect(() => {
     renderer.current?.setWindow(dayWindow, total.shown);
-  }, [dayWindow, total.shown]);
+    picker.setWindow(dayWindow);
+  }, [dayWindow, total.shown, picker]);
 
   useLayoutEffect(() => {
     renderer.current?.setColorByType(colorByType);
@@ -316,24 +304,24 @@ function Explorer({ data }: { data: EventData }) {
     renderer.current?.setReliefVisible(toggles.hillshade);
   }, [toggles]);
 
+  // The event the popup shows keeps a ring on the map.
+  const index = popup ? shownEvent : null;
   useEffect(() => {
-    const index = highlighted;
     mapView.current?.setHighlight(
       index === null ? null : { x: data.x[index]!, y: data.y[index]!, deaths: data.best[index]! },
     );
-  }, [data, highlighted]);
+  }, [data, index]);
+  const closePopup = useCallback(() => setPopup(null), []);
 
   // A new filter zooms the map and the timeline to its events, and clearing every filter
   // zooms back out. The first render is the default view already.
   const hasZoomed = useRef(false);
   useEffect(() => {
-    setTopLimit(TOP_EVENTS_STEP);
-    setHighlighted(null);
     if (!hasZoomed.current) {
       hasZoomed.current = true;
       return;
     }
-    const isUnfiltered = isAll(filters.location) && isAll(filters.conflict);
+    const isUnfiltered = isAll(filters.location) && isAll(filters.actor) && isAll(filters.conflict);
     const bounds = isUnfiltered ? null : filteredBounds(data, filtered.visible, filtered.count);
     mapView.current?.fitTo(bounds);
     const days = isUnfiltered ? null : filteredDays(data, filtered.visible);
@@ -353,6 +341,7 @@ function Explorer({ data }: { data: EventData }) {
   useEffect(() => {
     mapView.current?.setPanEnabled(!isDrawingBox);
     if (!isDrawingBox) return;
+    setPopup(null);
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") setIsDrawingBox(false);
     };
@@ -385,8 +374,18 @@ function Explorer({ data }: { data: EventData }) {
 
   return (
     <main className="app">
-      <header className="header">
-        <h1>{COPY.title}</h1>
+      <header className="header glass" ref={header}>
+        <div className="title-block">
+          <h1>{COPY.title}</h1>
+          <div className="summary">
+            <p>
+              <strong>{eventCount}</strong> {COPY.events}
+            </p>
+            <p>
+              <strong>{fatalityCount}</strong> {COPY.fatalities}
+            </p>
+          </div>
+        </div>
         <div className="filters">
           <span className="filters-label">{COPY.filterBy}</span>
           <ColumnMenu
@@ -403,6 +402,22 @@ function Explorer({ data }: { data: EventData }) {
             rangeOf={isRange ? locationCounts.range : undefined}
             hasEntries={locationCounts.hasEntries}
             isActive={!isAll(location)}
+            onClear={() => setLocation(locationMenu[0]!.value!)}
+          />
+          <ColumnMenu
+            id="actor"
+            label={COPY.actor.button}
+            items={actorMenu}
+            columnNames={COPY.actor.columns}
+            searchLabel={COPY.actor.search}
+            selected={actor}
+            selectedName={actor.name}
+            onSelect={setActor}
+            countOf={actorCounts.fatalities}
+            rangeOf={isRange ? actorCounts.range : undefined}
+            hasEntries={actorCounts.hasEntries}
+            isActive={!isAll(actor)}
+            onClear={() => setActor(actorMenu[0]!.value!)}
           />
           <ColumnMenu
             id="conflict"
@@ -417,15 +432,8 @@ function Explorer({ data }: { data: EventData }) {
             rangeOf={isRange ? conflictCounts.range : undefined}
             hasEntries={conflictCounts.hasEntries}
             isActive={!isAll(conflict)}
+            onClear={() => setConflict(conflictMenu[0]!.value!)}
           />
-        </div>
-        <div className="summary">
-          <p>
-            <strong>{eventCount}</strong> {COPY.events}
-          </p>
-          <p>
-            <strong>{fatalityCount}</strong> {COPY.fatalities}
-          </p>
         </div>
       </header>
 
@@ -446,6 +454,22 @@ function Explorer({ data }: { data: EventData }) {
           {mapDraw.draft && <BoxOutline box={mapDraw.draft} draft />}
         </div>
         {emptyMessage && <p className="empty">{emptyMessage}</p>}
+        {popup && mapView.current && (
+          <EventPopup
+            key={popup.events.join(",")}
+            data={data}
+            details={details}
+            events={popup.events}
+            spot={popup.spot}
+            mapView={mapView.current}
+            isRange={isRange}
+            colorByType={colorByType}
+            onShow={setShownEvent}
+            onSelectConflict={(id) => setConflict({ id, name: meta.conflicts[id]! })}
+            onSelectActor={(id) => setActor({ id, name: meta.actors[id]! })}
+            onClose={closePopup}
+          />
+        )}
         <Legend mapView={mapView} colorByType={colorByType} />
         <div className="box-bar">
           <Settings
@@ -476,31 +500,23 @@ function Explorer({ data }: { data: EventData }) {
         </div>
       </section>
 
-      <Timeline
-        months={meta.months}
-        series={chartSeries}
-        chartStyle={colorByType ? "lines" : "area"}
-        range={range}
-        isFiltered={isFiltered}
-        view={timelineView}
-        onViewChange={setTimelineView}
-        formatMonth={formatMonth}
-        onChange={setRange}
-        onReset={resetRange}
-        startHandle={startHandle}
-        isOpen={isTimelineOpen}
-        onToggle={setIsTimelineOpen}
-      />
-
-      <TopEvents
-        isOpen={isSideOpen}
-        onToggle={setIsSideOpen}
-        events={topRows}
-        hasMore={top.length > topLimit}
-        onShowMore={() => setTopLimit(topLimit + TOP_EVENTS_STEP)}
-        onHighlight={setHighlighted}
-        onSelect={(index) => mapView.current?.focusOn(data.x[index]!, data.y[index]!)}
-      />
+      <div className="timeline-dock" ref={timelineDock}>
+        <Timeline
+          months={meta.months}
+          series={chartSeries}
+          chartStyle={colorByType ? "lines" : "area"}
+          range={range}
+          isFiltered={isFiltered}
+          view={timelineView}
+          onViewChange={setTimelineView}
+          formatMonth={formatMonth}
+          onChange={setRange}
+          onReset={resetRange}
+          startHandle={startHandle}
+          isOpen={isTimelineOpen}
+          onToggle={setIsTimelineOpen}
+        />
+      </div>
     </main>
   );
 }

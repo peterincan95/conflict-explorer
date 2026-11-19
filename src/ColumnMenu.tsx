@@ -57,6 +57,8 @@ interface ColumnMenuProps<T> {
   unsortedColumns?: number[];
   /** Whether the menu is filtering, which marks its button. */
   isActive?: boolean;
+  /** Clears the filter, from a button beside the menu's while it's active. */
+  onClear?: () => void;
 }
 
 const compactFormat = (maximumFractionDigits: number) =>
@@ -169,6 +171,7 @@ export function ColumnMenu<T>({
   hasEntries,
   unsortedColumns = [],
   isActive = false,
+  onClear,
 }: ColumnMenuProps<T>) {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -533,6 +536,23 @@ export function ColumnMenu<T>({
         </span>
         <span className={isOpen ? "caret caret-open" : "caret"} aria-hidden="true" />
       </button>
+      {isActive && onClear && (
+        <button
+          type="button"
+          className="menu-clear"
+          aria-label={COPY.clearFilter(label)}
+          title={COPY.clearFilter(label)}
+          onClick={() => {
+            setIsOpen(false);
+            onClear();
+            button.current?.focus();
+          }}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </button>
+      )}
 
       {isOpen && (
         <div
