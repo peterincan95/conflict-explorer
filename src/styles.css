@@ -11,9 +11,8 @@
   --tick: #e8e8e8;
   --minor-tick: #7a7a7a;
   --track-height: 64px;
-  --mono: "IBM Plex Mono", ui-monospace, monospace;
-  --label-mono: "Roboto Mono", ui-monospace, monospace;
-  font-family: "IBM Plex Sans Condensed", system-ui, sans-serif;
+  --mono: "Roboto Mono", ui-monospace, monospace;
+  font-family: "Roboto Condensed", system-ui, sans-serif;
   color: var(--text);
   background: var(--background);
   color-scheme: dark;
@@ -168,7 +167,7 @@ body,
   padding: 10px 20px;
   border: 0;
   color: inherit;
-  font-family: var(--label-mono);
+  font-family: var(--mono);
   font-variant-numeric: tabular-nums;
   text-align: left;
   background: none;
@@ -426,7 +425,7 @@ body,
   flex-direction: column;
   gap: 4px;
   align-items: center;
-  font-family: var(--label-mono);
+  font-family: var(--mono);
   font-size: 12px;
 }
 
@@ -560,7 +559,7 @@ body,
   left: var(--panel-left, 16px);
   width: min(var(--menu-width), calc(100vw - 32px));
   color: var(--text-soft);
-  font-family: "IBM Plex Sans Condensed", system-ui, sans-serif;
+  font-family: "Roboto Condensed", system-ui, sans-serif;
   font-size: 16px;
   font-weight: 400;
   line-height: normal;
@@ -953,7 +952,7 @@ body,
 
 .range-label {
   position: absolute;
-  font-family: var(--label-mono);
+  font-family: var(--mono);
   top: 4px;
   font-size: 16px;
   font-variant-numeric: tabular-nums;
@@ -1099,7 +1098,7 @@ body,
 
 .year-row {
   position: relative;
-  font-family: var(--label-mono);
+  font-family: var(--mono);
   height: 22px;
   color: var(--text-muted);
   font-size: 13px;

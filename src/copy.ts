@@ -44,6 +44,9 @@ export const COPY = {
     best: "Best estimate",
     range: "Range",
     colorByType: "Color points by conflict type",
+    hillshade: "Hillshade",
+    places: "Populated places",
+    labels: "Labels",
   },
   legend: {
     title: "Legend",
@@ -52,7 +55,6 @@ export const COPY = {
   },
 
   boxSelect: "Box select",
-  labels: "Labels",
   clearBox: "Clear box",
   resetView: "Reset view",
   drawHint: "Drag on the map to draw a box",
