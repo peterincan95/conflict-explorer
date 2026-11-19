@@ -260,8 +260,15 @@ export function ColumnMenu<T>({
       const element = panel.current!;
       const furthest = window.innerWidth - element.offsetWidth - SCREEN_MARGIN;
       const clamped = Math.max(SCREEN_MARGIN, Math.min(left, furthest));
+      const top = bottom + 8;
       element.style.setProperty("--panel-left", `${clamped}px`);
-      element.style.setProperty("--panel-top", `${bottom + 8}px`);
+      element.style.setProperty("--panel-top", `${top}px`);
+      // A blurred glass panel around the menu becomes the frame its fixed position is
+      // measured from, so shift by however far it lands from the screen spot.
+      const placed = element.getBoundingClientRect();
+      element.style.setProperty("--panel-left", `${2 * clamped - placed.left}px`);
+      element.style.setProperty("--panel-top", `${2 * top - placed.top}px`);
+      element.style.setProperty("--panel-screen-top", `${top}px`);
     };
     place();
     window.addEventListener("resize", place);

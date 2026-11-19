@@ -2,7 +2,15 @@
 export const COPY = {
   pageTitle: "Global Conflict Fatalities",
   title: "Global Conflict Fatalities: 1989-2026",
-  filterBy: "Filter By:",
+  filters: {
+    title: "Filter By",
+    show: "Show filters",
+    hide: "Hide filters",
+  },
+  credit: {
+    text: "Data: UCDP Georeferenced Event Dataset (GED) v26.1",
+    href: "https://ucdp.uu.se/",
+  },
   clearFilter: (name: string) => `Clear ${name.toLowerCase()} filter`,
   events: "events",
   fatalities: "fatalities",
@@ -25,6 +33,12 @@ export const COPY = {
     all: "All actors",
     columns: ["Actors"],
     search: "Search actors",
+  },
+  type: {
+    button: "Conflict type",
+    all: "All conflict types",
+    columns: ["Conflict types"],
+    search: "Search conflict types",
   },
   conflict: {
     button: "Conflict",

@@ -11,6 +11,9 @@ const BOX_LINE = "#e8e8e8";
 // A label shows once the map is zoomed in as far as a web map at its zoom, less this
 // bias, and only where it doesn't overlap a label already placed.
 const LABEL_ZOOM_BIAS = 0.2;
+// Labels also go no further than this zoom at the home view, rising as the map zooms
+// in, so a wide screen doesn't name small countries before the user zooms in.
+const HOME_LABEL_ZOOM = 2;
 // Web map tiles are this many pixels wide at zoom 0.
 const WEB_TILE_PIXELS = 256;
 const LABEL_HALO = "rgb(0 0 0 / 70%)";
@@ -533,7 +536,8 @@ export class MapView {
     const toScreenX = (x: number) => width * centerX + (x - camera.x) * width * fill[0] * camera.zoom;
     const toScreenY = (y: number) => height * centerY - (y - camera.y) * height * fill[1] * camera.zoom;
     const webZoom = Math.log2((width * fill[0] * camera.zoom) / WEB_TILE_PIXELS);
-    this.drawLabels(toScreenX, toScreenY, webZoom + LABEL_ZOOM_BIAS);
+    const labelZoom = Math.min(webZoom + LABEL_ZOOM_BIAS, HOME_LABEL_ZOOM + Math.log2(camera.zoom));
+    this.drawLabels(toScreenX, toScreenY, labelZoom);
     this.drawHighlight(this.highlight, toScreenX, toScreenY, camera.zoom);
     this.drawHighlight(this.hovered, toScreenX, toScreenY, camera.zoom);
     if (area === WHOLE_WORLD) return;

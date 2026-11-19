@@ -129,7 +129,7 @@ const MAP_ZOOM_BRIGHTNESS = 0.9;
 const POINT_WEIGHT = 0.3;
 const FULL_WEIGHT_COVERAGE = 0.15;
 const WEIGHT_FALLOFF = 0.95;
-const DEFAULT_BRIGHTNESS = 1;
+const DEFAULT_BRIGHTNESS = 0.6;
 // Events outside a drawn box are drawn this bright, and lose this share of their color.
 const UNSELECTED_WEIGHT = 0.16;
 const UNSELECTED_DESATURATION = 0.5;

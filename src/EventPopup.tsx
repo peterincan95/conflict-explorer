@@ -272,7 +272,10 @@ export function EventPopup({
       ) : (
         <div className="popup-body">
           <div className="popup-facts">
-            <p className="popup-fact">{formatDays(meta.epoch, data.start[index]!, data.end[index]!)}</p>
+            <p className="popup-fact">
+              {colorByType && <span className="swatch" style={{ background: TYPE_COLORS[typeOf(index)] }} />}
+              {formatDays(meta.epoch, data.start[index]!, data.end[index]!)}
+            </p>
             <p className="popup-fact">{placeOf(index)}</p>
           </div>
           <div className="popup-details">
