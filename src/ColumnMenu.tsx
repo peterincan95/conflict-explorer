@@ -527,6 +527,27 @@ export function ColumnMenu<T>({
       <span className="visually-hidden" id={`${id}-label`}>
         {label}
       </span>
+      {onClear &&
+        (isActive ? (
+          <button
+            type="button"
+            className="menu-clear"
+            aria-label={COPY.clearFilter(label)}
+            title={COPY.clearFilter(label)}
+            onClick={() => {
+              setIsOpen(false);
+              onClear();
+              button.current?.focus();
+            }}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        ) : (
+          // Holds the clear button's space, so the name doesn't shift when it shows.
+          <span className="menu-clear-space" aria-hidden="true" />
+        ))}
       <button
         type="button"
         className={isActive ? "menu-button active" : "menu-button"}
@@ -543,23 +564,6 @@ export function ColumnMenu<T>({
         </span>
         <span className={isOpen ? "caret caret-open" : "caret"} aria-hidden="true" />
       </button>
-      {isActive && onClear && (
-        <button
-          type="button"
-          className="menu-clear"
-          aria-label={COPY.clearFilter(label)}
-          title={COPY.clearFilter(label)}
-          onClick={() => {
-            setIsOpen(false);
-            onClear();
-            button.current?.focus();
-          }}
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M6 6l12 12M18 6L6 18" />
-          </svg>
-        </button>
-      )}
 
       {isOpen && (
         <div

@@ -191,22 +191,32 @@ export async function loadHillshade(): Promise<ImageBitmap> {
   return createImageBitmap(blob);
 }
 
-const sourceFiles = new Map<number, Promise<string[]>>();
+const sourceFiles = new Map<number, Promise<ExtrasEntry[]>>();
+
+/** An event's source citation and its best estimate split by who died. */
+export interface EventExtras {
+  source: string;
+  /** Deaths on side A, side B, among civilians, and of people unknown, adding up to the best. */
+  deaths: [sideA: number, sideB: number, civilians: number, unknown: number];
+}
+
+type ExtrasEntry = [string, number, number, number, number];
 
 /**
- * UCDP's source citation for an event, fetched with the rest of its file the first
- * time any of them is needed.
+ * An event's source citation and deaths by side, fetched with the rest of its file
+ * the first time any of them is needed.
  */
-export async function loadSource(meta: Meta, index: number): Promise<string> {
+export async function loadExtras(meta: Meta, index: number): Promise<EventExtras> {
   const chunk = Math.floor(index / meta.sourceChunk);
   let file = sourceFiles.get(chunk);
   if (!file) {
-    file = fetchOk(`sources/${chunk}.json`).then((response) => response.json() as Promise<string[]>);
+    file = fetchOk(`sources/${chunk}.json`).then((response) => response.json() as Promise<ExtrasEntry[]>);
     // A failed fetch can be tried again later.
     file.catch(() => sourceFiles.delete(chunk));
     sourceFiles.set(chunk, file);
   }
-  return (await file)[index % meta.sourceChunk] ?? "";
+  const [source, ...deaths] = (await file)[index % meta.sourceChunk] ?? ["", 0, 0, 0, 0];
+  return { source, deaths: deaths as EventExtras["deaths"] };
 }
 
 /** Each event's low and high death estimates and place name, which only totals and the list need. */
