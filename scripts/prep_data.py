@@ -27,9 +27,10 @@ details.bin holds what only the summary and totals need, in the same order:
   uint32 high[count]      UCDP's high estimate of deaths, at least the best
   uint32 place[count]     index into places.json, the event's place name
 
-sources/<n>.json holds UCDP's source citation for events n * SOURCE_CHUNK up to
-(n + 1) * SOURCE_CHUNK, as a list of strings. The app fetches one only when it shows
-an event from it.
+sources/<n>.json holds what only the popup needs for events n * SOURCE_CHUNK up to
+(n + 1) * SOURCE_CHUNK, as a list of [source, deaths_a, deaths_b, deaths_civilians,
+deaths_unknown]: UCDP's source citation and its best estimate split by who died,
+which adds up to the best. The app fetches one only when it shows an event from it.
 
 Events are sorted by start day. Ids index the lists in meta.json; division
 id 0 is a placeholder for "none".
@@ -48,10 +49,12 @@ SOURCES = [
     (RAW / "GEDEvent_v26_1.csv", False),
     (RAW / "GEDEvent_v26_01_26_09.csv", True),
 ]
+# Who died, adding up to the best estimate.
+DEATHS = ["deaths_a", "deaths_b", "deaths_civilians", "deaths_unknown"]
 COLUMNS = [
     "id", "conflict_name", "side_a", "side_b", "adm_1", "adm_2", "country", "region",
     "latitude", "longitude", "date_start", "date_end", "best", "low", "high", "type_of_violence",
-    "where_coordinates", "source_article",
+    "where_coordinates", "source_article", *DEATHS,
 ]
 EPOCH = pd.Timestamp("1989-01-01")
 PROVISIONAL = 1
@@ -217,7 +220,13 @@ def main():
     source_dir.mkdir(exist_ok=True)
     for old in source_dir.glob("*.json"):
         old.unlink()
-    sources = events["source_article"].fillna("").str.strip().tolist()
+    if (events[DEATHS].sum(axis=1) != events["best"]).any():
+        raise ValueError("An event's deaths by side don't add up to its best estimate")
+    sources = [
+        [source, *map(int, deaths)]
+        for source, deaths in zip(events["source_article"].fillna("").str.strip(),
+                                  events[DEATHS].to_numpy())
+    ]
     for chunk, first in enumerate(range(0, count, SOURCE_CHUNK)):
         (source_dir / f"{chunk}.json").write_text(
             json.dumps(sources[first:first + SOURCE_CHUNK], separators=(",", ":"), ensure_ascii=False),
