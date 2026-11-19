@@ -19,12 +19,25 @@ export type DayView = [from: number, to: number];
 
 type DragKind = "from" | "to" | "band";
 
-/** One line on the chart, or a band from low to high when `range` is given. */
+/** One line on the chart. */
 export interface ChartSeries {
   key: string;
   color: string;
   values: ArrayLike<number>;
-  range: readonly [ArrayLike<number>, ArrayLike<number>] | null;
+}
+
+/**
+ * The months whose starts fall inside a view, as a range. `days` is each month's first
+ * day, plus the end of the last month.
+ */
+function monthsInView(days: ArrayLike<number>, [start, end]: DayView): MonthRange {
+  const lastMonth = days.length - 1;
+  let from = 0;
+  while (from < lastMonth && days[from]! < start - 0.5) from += 1;
+  let to = lastMonth;
+  while (to > 0 && days[to]! > end + 0.5) to -= 1;
+  if (to <= from) return [Math.min(from, lastMonth - 1), Math.min(from, lastMonth - 1) + 1];
+  return [from, to];
 }
 
 // The chart and month ticks share one SVG coordinate system, stretched to fit the track.
@@ -46,8 +59,6 @@ const LINE_HEIGHT_PIXELS = 16;
 export const MIN_VIEW_DAYS = 365;
 
 const DOUBLE_PRESS_MS = 350;
-// A band chart's fill when each type of violence has its own.
-const TYPE_BAND_OPACITY = 0.45;
 
 interface Drag {
   kind: DragKind;
@@ -101,47 +112,20 @@ function chartPaths(
   let last = monthCount - 1;
   while (last > 0 && middleDay(last - 1) > view[1]) last -= 1;
   let peak = 1;
-  for (const { values, range } of series) {
-    const top = range ? range[1] : values;
+  for (const { values } of series) {
     for (let month = first; month <= last; month += 1) {
-      if (days[month + 1]! > view[0] && days[month]! < view[1]) peak = Math.max(peak, top[month]!);
+      if (days[month + 1]! > view[0] && days[month]! < view[1]) peak = Math.max(peak, values[month]!);
     }
   }
-  return series.map(({ key, color, values, range }) => ({
-    key,
-    color,
-    isBand: range !== null,
-    ...seriesPaths(values, range, first, last, peak, middleDay, toX),
-  }));
-}
-
-function seriesPaths(
-  counts: ArrayLike<number>,
-  range: ChartSeries["range"],
-  first: number,
-  last: number,
-  peak: number,
-  middleDay: (month: number) => number,
-  toX: (day: number) => number,
-) {
-  const pointsOf = (values: ArrayLike<number>) => {
+  const bottom = `L${toX(middleDay(last))} ${VIEW_HEIGHT}L${toX(middleDay(first))} ${VIEW_HEIGHT}Z`;
+  return series.map(({ key, color, values }) => {
     const points: string[] = [];
     for (let month = first; month <= last; month += 1) {
       points.push(`${toX(middleDay(month))} ${VIEW_HEIGHT - (values[month]! / peak) * CHART_HEIGHT}`);
     }
-    return points;
-  };
-  if (range) {
-    // A band from the low line up to the high line.
-    const low = pointsOf(range[0]);
-    const high = pointsOf(range[1]);
-    const lowLine = `M${low.join("L")}`;
-    const highLine = `M${high.join("L")}`;
-    return { line: lowLine + highLine, area: `${highLine}L${low.reverse().join("L")}Z` };
-  }
-  const line = `M${pointsOf(counts).join("L")}`;
-  const bottom = `L${toX(middleDay(last))} ${VIEW_HEIGHT}L${toX(middleDay(first))} ${VIEW_HEIGHT}Z`;
-  return { line, area: line + bottom };
+    const line = `M${points.join("L")}`;
+    return { key, color, line, area: line + bottom };
+  });
 }
 
 export function Timeline({
@@ -288,14 +272,28 @@ export function Timeline({
       onReset();
       return;
     }
-    // A band reaching past both ends of a zoomed view has nowhere to move, so it pans.
-    if (kind === "band" && isZoomed && share(from) <= 0 && share(to) >= 1) {
+    // A band filling a zoomed view has nowhere to move, so it pans.
+    const [viewStart, viewEnd] = monthsInView(days, view);
+    if (kind === "band" && isZoomed && from <= viewStart && to >= viewEnd) {
       startPan(event);
       return;
     }
     event.currentTarget.focus();
     event.currentTarget.setPointerCapture(event.pointerId);
-    drag.current = { kind, startMonth: nearestMonth(event.clientX), startRange: range };
+    drag.current = { kind, startMonth: nearestMonth(event.clientX), startRange: snappedRange(kind) };
+  };
+
+  /**
+   * Moving a handle that sits past the edge of a zoomed view first brings both handles
+   * inside it, so the drag starts from what's in view. Returns the range to move from.
+   */
+  const snappedRange = (kind: DragKind): MonthRange => {
+    if (kind === "band") return range;
+    const [viewStart, viewEnd] = monthsInView(days, view);
+    const next: MonthRange = [Math.max(from, viewStart), Math.min(to, viewEnd)];
+    if (next[1] <= next[0]) return range;
+    if (next[0] !== from || next[1] !== to) onChange(next);
+    return next;
   };
 
   const startPan = (event: PointerEvent<HTMLElement>) => {
@@ -340,7 +338,7 @@ export function Timeline({
     const change = { ArrowLeft: -step, ArrowDown: -step, ArrowRight: step, ArrowUp: step }[event.key];
     if (change === undefined) return;
     event.preventDefault();
-    onChange(moved(kind, range, change));
+    onChange(moved(kind, snappedRange(kind), change));
   };
 
   const handle = (kind: "from" | "to", month: number, label: string, valueMonth: number) => (
@@ -437,14 +435,12 @@ export function Timeline({
               preserveAspectRatio="none"
               aria-hidden="true"
             >
-              {chart.map(({ key, color, isBand, line, area }) =>
+              {chart.map(({ key, color, line, area }) =>
                 chartStyle === "area" ? (
                   <g key={key}>
                     <path className="chart-area" d={area} style={{ fill: color }} />
                     <path className="chart-line" d={line} style={{ stroke: color }} />
                   </g>
-                ) : isBand ? (
-                  <path key={key} d={area} style={{ fill: color, fillOpacity: TYPE_BAND_OPACITY }} />
                 ) : (
                   <path key={key} className="chart-line chart-type-line" d={line} style={{ stroke: color }} />
                 ),
