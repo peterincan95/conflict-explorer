@@ -58,7 +58,7 @@ interface Targets {
 
 // Point colors from the sparsest to the densest areas, evenly spaced after black, which
 // keeps empty areas matching the background.
-export const DEFAULT_GRADIENT = ["#893426", "#e67f0e", "#faba58", "#fff3da"];
+export const DEFAULT_GRADIENT = ["#5c0a12", "#d0101f", "#ff3646", "#ffe2df"];
 
 /** Point colors by type of violence: state-based, non-state and one-sided. */
 export const TYPE_COLORS: Record<ViolenceType, string> = {
@@ -388,6 +388,33 @@ function smoothstep([from, to]: number[], zoom: number) {
   return t * t * (3 - 2 * t);
 }
 
+/** The part of the map panel left open by the panels floating over it, in CSS pixels. */
+export interface MapFrame {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * How the world sits on the map panel: the share of the panel's width and height it
+ * fills at the home view, and the share across and down where the view's center sits.
+ * The world fits the frame, and the camera centers on the frame's middle.
+ */
+export interface MapLayout {
+  fill: [number, number];
+  center: [number, number];
+}
+
+export function mapLayout(extent: Meta["extent"], width: number, height: number, frame: MapFrame | null): MapLayout {
+  const open = frame && frame.width > 0 && frame.height > 0 ? frame : { left: 0, top: 0, width, height };
+  const fill = mapFill(extent, open.width, open.height);
+  return {
+    fill: [(fill[0] * open.width) / width, (fill[1] * open.height) / height],
+    center: [(open.left + open.width / 2) / width, (open.top + open.height / 2) / height],
+  };
+}
+
 /** The share of the panel's width and height the world fills, keeping it undistorted. */
 export function mapFill({ xMax, yMax }: Meta["extent"], width: number, height: number): [number, number] {
   const worldAspect = xMax / yMax;
@@ -473,6 +500,7 @@ export class EventRenderer {
   private window: DayWindow = { from: 0, to: 0 };
   private area: Area = { west: 0, east: GRID_MAX, south: 0, north: GRID_MAX };
   private camera: Camera = { zoom: 1, x: 0.5, y: 0.5 };
+  private openFrame: MapFrame | null = null;
   private frame = 0;
   private maxPointSize = 64;
   private lineData: Partial<Record<LineDetail, { segments: Uint16Array; counts: LineCounts }>> = {};
@@ -576,6 +604,12 @@ export class EventRenderer {
   /** Shows or hides the relief. */
   setReliefVisible(isVisible: boolean) {
     this.showRelief = isVisible;
+    this.requestDraw();
+  }
+
+  /** The part of the panel the world fits in, or null for all of it. */
+  setFrame(frame: MapFrame | null) {
+    this.openFrame = frame;
     this.requestDraw();
   }
 
@@ -775,7 +809,7 @@ export class EventRenderer {
     gl.blendFunc(gl.ONE, gl.ONE);
 
     const { zoom, x, y } = this.camera;
-    const fill = mapFill(this.data.meta.extent, this.width, this.height);
+    const { fill, center } = mapLayout(this.data.meta.extent, this.width, this.height, this.openFrame);
     const growth = zoomGrowth(zoom);
     const pointSize = Math.max(0.5, POINT_SIZE * growth * pixelRatio);
     const lightSize = Math.max(0.5, LIGHT_BASE_SIZE * growth * pixelRatio);
@@ -787,7 +821,9 @@ export class EventRenderer {
     const scaleX = 2 * fill[0] * zoom;
     const scaleY = 2 * fill[1] * zoom;
     gl.uniform2f(uniforms.u_scale!, scaleX, scaleY);
-    gl.uniform2f(uniforms.u_offset!, -scaleX * x, -scaleY * y);
+    const offsetX = 2 * center[0] - 1 - scaleX * x;
+    const offsetY = 1 - 2 * center[1] - scaleY * y;
+    gl.uniform2f(uniforms.u_offset!, offsetX, offsetY);
     gl.uniform2f(uniforms.u_window!, this.window.from, this.window.to);
     // Half a grid step past each edge, so rounding can't drop events on the edge.
     const { west, east, south, north } = this.area;
@@ -808,7 +844,7 @@ export class EventRenderer {
     gl.uniform1f(uniforms.u_weight!, weight);
     gl.uniform2f(uniforms.u_roundSizes!, ROUND_POINT_SIZES[0]!, ROUND_POINT_SIZES[1]!);
     gl.drawArrays(gl.POINTS, 0, this.data.meta.count);
-    const projection = [scaleX, scaleY, -scaleX * x, -scaleY * y];
+    const projection = [scaleX, scaleY, offsetX, offsetY];
     this.drawLines(resources, targets, projection);
 
     gl.disable(gl.BLEND);

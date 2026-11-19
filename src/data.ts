@@ -57,6 +57,8 @@ export interface Meta {
   adm2: { name: string; adm1: number }[];
   actors: string[];
   conflicts: string[];
+  /** Events per source citation file. */
+  sourceChunk: number;
 }
 
 /** Per-event attributes for filtering on the CPU. */
@@ -187,6 +189,24 @@ export async function loadLines(detail: LineDetail, basemap: Basemap) {
 export async function loadHillshade(): Promise<ImageBitmap> {
   const blob = await (await fetchOk("hillshade.webp")).blob();
   return createImageBitmap(blob);
+}
+
+const sourceFiles = new Map<number, Promise<string[]>>();
+
+/**
+ * UCDP's source citation for an event, fetched with the rest of its file the first
+ * time any of them is needed.
+ */
+export async function loadSource(meta: Meta, index: number): Promise<string> {
+  const chunk = Math.floor(index / meta.sourceChunk);
+  let file = sourceFiles.get(chunk);
+  if (!file) {
+    file = fetchOk(`sources/${chunk}.json`).then((response) => response.json() as Promise<string[]>);
+    // A failed fetch can be tried again later.
+    file.catch(() => sourceFiles.delete(chunk));
+    sourceFiles.set(chunk, file);
+  }
+  return (await file)[index % meta.sourceChunk] ?? "";
 }
 
 /** Each event's low and high death estimates and place name, which only totals and the list need. */
