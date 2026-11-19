@@ -16,8 +16,12 @@ export function formatToll({ best, low, high }: Toll, isRange: boolean, format =
   return low === high ? format(low) : `${format(low)}–${format(high)}`;
 }
 
-/** "Al Fashir town, Sudan": the place, capitalized, then its country unless the place names it. */
-export function placeName(place: string | undefined, country: string) {
+// UCDP ends settlement names with their kind ("Al Fashir town"); only the name is shown.
+const SETTLEMENT_KIND = / (village|town|hamlet)$/;
+
+/** "Al Fashir, Sudan": the place, capitalized, then its country unless the place names it. */
+export function placeName(fullPlace: string | undefined, country: string) {
+  const place = fullPlace?.replace(SETTLEMENT_KIND, "");
   if (!place) return country;
   const capitalized = place[0]!.toUpperCase() + place.slice(1);
   return place.toLowerCase().includes(country.toLowerCase()) ? capitalized : `${capitalized}, ${country}`;

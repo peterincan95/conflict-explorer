@@ -1,4 +1,4 @@
-import type { Details, EventData } from "./data";
+import { VIOLENCE_TYPES, type Details, type EventData } from "./data";
 import { ALL, type ListFilter, type LocationFilter } from "./filters";
 
 /** Positions are stored as 16-bit integers across the projection's extent. */
@@ -24,6 +24,8 @@ export interface Filters {
   location: LocationFilter;
   actor: ListFilter;
   conflict: ListFilter;
+  /** The type of violence, by its UCDP code. */
+  type: ListFilter;
 }
 
 type Test = (index: number) => boolean;
@@ -53,6 +55,23 @@ function conflictTest({ attrs }: EventData, { id }: ListFilter): Test {
   return (index) => conflict[index] === id;
 }
 
+function typeTest({ attrs }: EventData, { id }: ListFilter): Test {
+  if (id === ALL) return always;
+  const { type } = attrs;
+  return (index) => type[index] === id;
+}
+
+/** Tests for every filter but `skip`, so a menu can count what each of its items would show. */
+function filterTests(data: EventData, filters: Filters, skip?: keyof Filters): Test[] {
+  const tests: [keyof Filters, Test][] = [
+    ["location", locationTest(data, filters.location)],
+    ["actor", actorTest(data, filters.actor)],
+    ["conflict", conflictTest(data, filters.conflict)],
+    ["type", typeTest(data, filters.type)],
+  ];
+  return tests.filter(([key]) => key !== skip).map(([, test]) => test);
+}
+
 function areaTest({ x, y }: EventData, area: Area): Test {
   if (area === WHOLE_WORLD) return always;
   const { west, east, south, north } = area;
@@ -63,9 +82,9 @@ function areaTest({ x, y }: EventData, area: Area): Test {
   };
 }
 
-/** 1 for each event that passes the location, actor and conflict filters. The GPU draws only these. */
-export function filterEvents(data: EventData, { location, actor, conflict }: Filters) {
-  const tests = [locationTest(data, location), actorTest(data, actor), conflictTest(data, conflict)];
+/** 1 for each event that passes the location, actor, conflict and type filters. The GPU draws only these. */
+export function filterEvents(data: EventData, filters: Filters) {
+  const tests = filterTests(data, filters);
   const visible = new Uint8Array(data.meta.count);
   let count = 0;
   for (let index = 0; index < visible.length; index += 1) {
@@ -247,7 +266,7 @@ export function countLocations(
     adm2: new Tally(meta.adm2.length, data, details),
   };
   const regionOf = meta.countries.map(({ region }) => region);
-  const tests = [actorTest(data, filters.actor), conflictTest(data, filters.conflict)];
+  const tests = filterTests(data, filters, "location");
   eachEvent(data, tests, area, window, (index) => {
     const country = attrs.country[index]!;
     tallies.region.addTotal(index);
@@ -277,7 +296,7 @@ export function countActors(
 ) {
   const { sideA, sideB } = data.attrs;
   const tally = new Tally(data.meta.actors.length, data, details);
-  const tests = [locationTest(data, filters.location), conflictTest(data, filters.conflict)];
+  const tests = filterTests(data, filters, "actor");
   eachEvent(data, tests, area, window, (index) => {
     tally.addTotal(index);
     tally.add(sideA[index]!, index);
@@ -295,10 +314,27 @@ export function countConflicts(
   window: DayWindow,
 ) {
   const tally = new Tally(data.meta.conflicts.length, data, details);
-  const tests = [locationTest(data, filters.location), actorTest(data, filters.actor)];
+  const tests = filterTests(data, filters, "conflict");
   eachEvent(data, tests, area, window, (index) => {
     tally.addTotal(index);
     tally.add(data.attrs.conflict[index]!, index);
+  });
+  return readList(tally);
+}
+
+/** What each type of violence would show, given the other filters. */
+export function countTypes(
+  data: EventData,
+  details: Details | null,
+  filters: Filters,
+  area: Area,
+  window: DayWindow,
+) {
+  const tally = new Tally(VIOLENCE_TYPES.length + 1, data, details);
+  const tests = filterTests(data, filters, "type");
+  eachEvent(data, tests, area, window, (index) => {
+    tally.addTotal(index);
+    tally.add(data.attrs.type[index]!, index);
   });
   return readList(tally);
 }

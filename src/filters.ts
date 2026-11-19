@@ -1,6 +1,6 @@
 import type { MenuItem } from "./ColumnMenu";
 import { COPY } from "./copy";
-import type { Meta } from "./data";
+import { VIOLENCE_TYPES, type Meta } from "./data";
 
 export type LocationLevel = "all" | "region" | "country" | "adm1" | "adm2";
 
@@ -92,6 +92,18 @@ export function buildListMenu(
   return [
     { name: all, value: { id: ALL, name: button }, section: columns[0], pin: "start", children: [] },
     ...names.map((name, id) => ({ name, value: { id, name }, section: columns[0], children: [] })),
+  ];
+}
+
+/** The types of violence, by their UCDP codes, with "all" pinned first. */
+export function buildTypeMenu(): MenuItem<ListFilter>[] {
+  const { all, button, columns } = COPY.type;
+  return [
+    { name: all, value: { id: ALL, name: button }, section: columns[0], pin: "start", children: [] },
+    ...VIOLENCE_TYPES.map((id) => {
+      const name = COPY.legend.types[id];
+      return { name, value: { id, name }, section: columns[0], children: [] };
+    }),
   ];
 }
 
