@@ -50,7 +50,6 @@ const ANNOUNCE_DELAY_MS = 600;
 const TOP_EVENTS_STEP = 25;
 // Zooming the timeline to a filter leaves this share of its days either side.
 const VIEW_PADDING = 0.05;
-const PHONE_QUERY = "(max-width: 760px)";
 const numberFormat = new Intl.NumberFormat("en-US");
 
 /** "Al Fashir town, Sudan": the place, capitalized, then its country unless the place names it. */
@@ -60,11 +59,13 @@ function placeName(place: string | undefined, country: string) {
   return place.toLowerCase().includes(country.toLowerCase()) ? capitalized : `${capitalized}, ${country}`;
 }
 
-const thousandsFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
+const shortFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
 
-/** Deaths in full below a thousand, and in thousands to one decimal from there: "121.8k". */
+/** Deaths in full below a thousand, then in thousands or millions to one decimal: "121.8k", "4.4M". */
 export function formatDeaths(count: number) {
-  return count >= 1000 ? `${thousandsFormat.format(count / 1000)}k` : numberFormat.format(count);
+  if (count >= 1_000_000) return `${shortFormat.format(count / 1_000_000)}M`;
+  if (count >= 1000) return `${shortFormat.format(count / 1000)}k`;
+  return numberFormat.format(count);
 }
 
 /** A death toll as its best estimate, or as its range when `isRange`. */
@@ -126,8 +127,7 @@ function Explorer({ data }: { data: EventData }) {
   const [timelineView, setTimelineView] = useState<DayView>(fullView);
   const [topLimit, setTopLimit] = useState(TOP_EVENTS_STEP);
   const [highlighted, setHighlighted] = useState<number | null>(null);
-  // Phones start with the list closed, since it covers the map there.
-  const [isSideOpen, setIsSideOpen] = useState(() => !matchMedia(PHONE_QUERY).matches);
+  const [isSideOpen, setIsSideOpen] = useState(false);
   const [area, setArea] = useState<Area>(WHOLE_WORLD);
   const [isDrawingBox, setIsDrawingBox] = useState(false);
   const [isMapMoved, setIsMapMoved] = useState(false);
@@ -165,31 +165,16 @@ function Explorer({ data }: { data: EventData }) {
     () => fatalitiesByMonth(data, filtered.visible, area, monthOf),
     [data, filtered, area, monthOf],
   );
-  const monthlyRange = useMemo(
-    () =>
-      isRange
-        ? ([
-            fatalitiesByMonth(data, filtered.visible, area, monthOf, details.low),
-            fatalitiesByMonth(data, filtered.visible, area, monthOf, details.high),
-          ] as const)
-        : null,
-    [data, details, isRange, filtered, area, monthOf],
-  );
-  // One series for all events, or one per type of violence when points show types.
+  // One series for all events, or one per type of violence when points show types. The
+  // chart always uses the best estimate, even when the rest shows ranges.
   const chartSeries: ChartSeries[] = useMemo(() => {
-    if (!colorByType) {
-      const color = DEFAULT_GRADIENT.at(-2)!;
-      return [{ key: "all", color, values: monthlyFatalities, range: monthlyRange }];
-    }
-    const byMonth = (type: number, deaths?: Uint32Array) =>
-      fatalitiesByMonth(data, filtered.visible, area, monthOf, deaths, type);
+    if (!colorByType) return [{ key: "all", color: DEFAULT_GRADIENT.at(-2)!, values: monthlyFatalities }];
     return VIOLENCE_TYPES.map((type) => ({
       key: String(type),
       color: TYPE_COLORS[type],
-      values: byMonth(type),
-      range: isRange ? ([byMonth(type, details.low), byMonth(type, details.high)] as const) : null,
+      values: fatalitiesByMonth(data, filtered.visible, area, monthOf, data.best, type),
     }));
-  }, [colorByType, data, details, isRange, filtered, area, monthOf, monthlyFatalities, monthlyRange]);
+  }, [colorByType, data, filtered, area, monthOf, monthlyFatalities]);
   const total = useMemo(
     () => totals(data, details, filtered.visible, area, dayWindow),
     [data, details, filtered, area, dayWindow],
@@ -229,7 +214,7 @@ function Explorer({ data }: { data: EventData }) {
     return `${monthName(month)} ${year}`;
   };
   const eventCount = numberFormat.format(total.events);
-  const fatalityCount = formatToll(total.fatalities, isRange);
+  const fatalityCount = formatToll(total.fatalities, isRange, formatDeaths);
   const dates = `${formatMonth(range[0])} – ${formatMonth(range[1] - 1)}`;
   const description = COPY.announcement(eventCount, fatalityCount, dates);
 

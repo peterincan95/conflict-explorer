@@ -58,10 +58,12 @@ export const TYPE_COLORS: Record<ViolenceType, string> = {
   2: "#2fc46a",
   3: "#ff5ca8",
 };
-// In type colors, points reach their full color at this brightness, then whiten
-// toward the brightest by up to this share.
-const TYPE_FULL_LIGHT = 0.6;
-const TYPE_WHITENING = 0.6;
+// Type colors run through a ramp like the default gradient's: black, a dark shade at
+// this share of the color, the color itself at half brightness, then tints this far
+// toward white, ending close to white at the brightest.
+const TYPE_DARK_SHADE = 0.5;
+const TYPE_LIGHT_TINT = 0.45;
+const TYPE_PEAK_TINT = 0.9;
 const GRADIENT_START = "#000000";
 
 const gradientStops = (colors: readonly string[]) => [GRADIENT_START, ...colors];
@@ -292,8 +294,16 @@ void main() {
     vec2 shares = clamp(sum.gb / max(sum.r, 1e-6), 0.0, 1.0);
     float state = max(1.0 - shares.x - shares.y, 0.0);
     vec3 hue = state * u_typeColors[0] + shares.x * u_typeColors[1] + shares.y * u_typeColors[2];
-    rgb = hue * min(light / ${TYPE_FULL_LIGHT}, 1.0);
-    rgb = mix(rgb, vec3(1.0), smoothstep(${TYPE_FULL_LIGHT}, 1.0, light) * ${TYPE_WHITENING});
+    vec3 ramp[5] = vec3[5](
+      vec3(0.0),
+      hue * ${TYPE_DARK_SHADE},
+      hue,
+      mix(hue, vec3(1.0), ${TYPE_LIGHT_TINT}),
+      mix(hue, vec3(1.0), ${TYPE_PEAK_TINT})
+    );
+    float position = clamp(light, 0.0, 1.0) * 4.0;
+    int stop = min(int(position), 3);
+    rgb = mix(ramp[stop], ramp[stop + 1], position - float(stop));
   }
   // Grays by the share of the light that comes from events outside the box.
   float outside = (core.a + near.a + far.a) / max(core.r + near.r + far.r, 1e-6);
