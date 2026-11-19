@@ -113,6 +113,9 @@ export const COPY = {
       ` and resulted in ${{ range: "an estimated ", estimate: "approximately ", exact: "" }[certainty]}${deaths} ${isOne ? "fatality" : "fatalities"}.`,
     ],
     deaths: (count: string, isOne: boolean) => `${count} ${isOne ? "death" : "deaths"}`,
+    /** Labels for the deaths by side; sides A and B go by their actors' names. */
+    civilians: "Civilians",
+    unknown: "Unknown",
     source: "Source:",
     loadingSource: "Loading…",
     moreSource: "More",

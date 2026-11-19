@@ -1,6 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { COPY } from "./copy";
-import { formatDays, loadSource, type Details, type EventData, type ViolenceType } from "./data";
+import {
+  formatDays,
+  loadExtras,
+  type Details,
+  type EventData,
+  type EventExtras,
+  type ViolenceType,
+} from "./data";
 import { formatDeaths, formatSource, formatToll, numberFormat, placeName } from "./format";
 import type { MapView } from "./mapView";
 import { TYPE_COLORS } from "./renderer";
@@ -10,6 +17,7 @@ import { TYPE_COLORS } from "./renderer";
 const SPOT_GAP = 14;
 const EDGE_GAP = 8;
 const PROVISIONAL = 1;
+const ONE_SIDED = 3;
 // Citations longer than this many characters start cut to a few lines, with a toggle.
 const LONG_SOURCE = 180;
 
@@ -47,6 +55,7 @@ export function EventPopup({
   const [position, setPosition] = useState(0);
   const [isListOpen, setIsListOpen] = useState(false);
   const [source, setSource] = useState<string | null>(null);
+  const [deaths, setDeaths] = useState<EventExtras["deaths"] | null>(null);
   const [isSourceOpen, setIsSourceOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const { meta, attrs } = data;
@@ -106,10 +115,13 @@ export function EventPopup({
   useEffect(() => {
     let isCurrent = true;
     setSource(null);
+    setDeaths(null);
     setIsSourceOpen(false);
-    loadSource(meta, index)
-      .then((text) => {
-        if (isCurrent) setSource(formatSource(text));
+    loadExtras(meta, index)
+      .then((extras) => {
+        if (!isCurrent) return;
+        setSource(formatSource(extras.source));
+        setDeaths(extras.deaths);
       })
       .catch(() => {
         if (isCurrent) setSource("");
@@ -170,6 +182,14 @@ export function EventPopup({
     certainty,
     isOne,
   );
+  // Side B of violence against civilians is the civilians, counted in their own row.
+  // Civilian and unknown deaths show only where there are some.
+  const breakdown = deaths && [
+    { name: meta.actors[sideA]!, count: deaths[0] },
+    ...(typeOf(index) === ONE_SIDED ? [] : [{ name: meta.actors[sideB]!, count: deaths[1] }]),
+    ...(deaths[2] > 0 ? [{ name: COPY.popup.civilians, count: deaths[2] }] : []),
+    ...(deaths[3] > 0 ? [{ name: COPY.popup.unknown, count: deaths[3] }] : []),
+  ];
   const isProvisional = (attrs.flags[index]! & PROVISIONAL) !== 0;
   const isLongSource = (source?.length ?? 0) > LONG_SOURCE;
 
@@ -287,6 +307,16 @@ export function EventPopup({
           </div>
           <div className="popup-details">
             <p className="popup-summary">{summary}</p>
+            {breakdown && (
+              <dl className="popup-breakdown">
+                {breakdown.map(({ name, count }, at) => (
+                  <div key={at} className="popup-breakdown-row">
+                    <dt>{name}</dt>
+                    <dd>{numberFormat.format(count)}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
             <p className={isLongSource && !isSourceOpen ? "popup-source clamped" : "popup-source"}>
               {COPY.popup.source}{" "}
               {source === null ? COPY.popup.loadingSource : source || COPY.popup.noSource}
