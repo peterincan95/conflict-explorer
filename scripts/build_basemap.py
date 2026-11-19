@@ -60,6 +60,11 @@ COUNTRY_ZOOM = lambda labelrank: 0.8 * labelrank          # noqa: E731
 PROVINCE_ZOOM = lambda labelrank: 4.5 + 0.5 * labelrank   # noqa: E731
 PLACE_ZOOM = lambda scalerank: 2.4 + 0.9 * scalerank      # noqa: E731
 MIN_LABEL_LEAD = 1
+# Country labels also wait until the country's largest piece is about this many pixels
+# across on screen (the square root of its area), so small countries name themselves
+# only once there's room. Web map zoom 0 shows the whole world 256 pixels wide.
+COUNTRY_MIN_PIXELS = 44
+WEB_TILE_PIXELS = 256
 # Provinces with Natural Earth's labelrank 20 are unranked; they never get a label.
 UNRANKED = 20
 # Labels on pieces smaller than this share of the grid would never fit.
@@ -138,11 +143,18 @@ def largest_piece(shape) -> Polygon | None:
 
 
 def label_spot(shape):
+    """The label spot on the grid, and the width of the piece it's in, in grid units."""
     piece = largest_piece(shape)
     if piece is None or piece.is_empty or piece.area < MIN_LABEL_AREA * GRID * GRID:
         return None
-    spot = polylabel(piece, tolerance=max(1.0, math.sqrt(piece.area) / 200))
-    return int(round(spot.x)), int(round(spot.y))
+    size = math.sqrt(piece.area)
+    spot = polylabel(piece, tolerance=max(1.0, size / 200))
+    return int(round(spot.x)), int(round(spot.y)), size
+
+
+def size_zoom(size: float) -> float:
+    """The web map zoom where a piece this many grid units across reaches COUNTRY_MIN_PIXELS."""
+    return math.log2(COUNTRY_MIN_PIXELS * GRID / (WEB_TILE_PIXELS * size))
 
 
 def build_labels():
@@ -154,7 +166,11 @@ def build_labels():
             continue
         countries.append({
             "name": record["NAME"], "x": spot[0], "y": spot[1],
-            "minZoom": round(max(COUNTRY_ZOOM(record["LABELRANK"]), record["MIN_LABEL"] - MIN_LABEL_LEAD), 2),
+            "minZoom": round(max(
+                COUNTRY_ZOOM(record["LABELRANK"]),
+                record["MIN_LABEL"] - MIN_LABEL_LEAD,
+                size_zoom(spot[2]),
+            ), 2),
             "rank": [record["LABELRANK"], record["scalerank"], -(record["POP_EST"] or 0)],
         })
 
