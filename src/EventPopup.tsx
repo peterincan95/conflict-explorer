@@ -142,6 +142,13 @@ export function EventPopup({
 
   const toll = tollOf(index);
   const isOne = (isRange ? toll.high : toll.best) === 1;
+  // Without low and high estimates, the best one stands alone and reads as exact.
+  const certainty =
+    isRange && toll.low !== toll.high
+      ? "range"
+      : toll.low === toll.best && toll.high === toll.best
+        ? "exact"
+        : "estimate";
   const sideA = attrs.sideA[index]!;
   const sideB = attrs.sideB[index]!;
   const summary = COPY.popup.summary(
@@ -160,7 +167,7 @@ export function EventPopup({
     meta.actors[sideA]!,
     meta.actors[sideB]!,
     formatToll(toll, isRange, numberFormat.format),
-    isRange && toll.low !== toll.high,
+    certainty,
     isOne,
   );
   const isProvisional = (attrs.flags[index]! & PROVISIONAL) !== 0;

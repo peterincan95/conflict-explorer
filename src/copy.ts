@@ -100,7 +100,8 @@ export const COPY = {
       sideA: string,
       sideB: string,
       deaths: string,
-      isRange: boolean,
+      /** "range" when the deaths are a low–high range, "exact" when every estimate agrees. */
+      certainty: "range" | "estimate" | "exact",
       isOne: boolean,
     ) => [
       `This instance of ${type} was part of a `,
@@ -109,7 +110,7 @@ export const COPY = {
       link(sideA, "sideA"),
       " and ",
       link(sideB, "sideB"),
-      ` and resulted in ${isRange ? "an estimated" : "approximately"} ${deaths} ${isOne ? "fatality" : "fatalities"}.`,
+      ` and resulted in ${{ range: "an estimated ", estimate: "approximately ", exact: "" }[certainty]}${deaths} ${isOne ? "fatality" : "fatalities"}.`,
     ],
     deaths: (count: string, isOne: boolean) => `${count} ${isOne ? "death" : "deaths"}`,
     source: "Source:",
