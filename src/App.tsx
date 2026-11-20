@@ -23,7 +23,7 @@ import {
   type LocationFilter,
 } from "./filters";
 import { Legend } from "./Legend";
-import { formatDeaths, formatToll, numberFormat } from "./format";
+import { actorLabels, formatDeaths, formatToll, numberFormat } from "./format";
 import { MapView } from "./mapView";
 import { EventPicker } from "./picking";
 import { DEFAULT_GRADIENT, DETAIL_LINE_ZOOM, EventRenderer, TYPE_COLORS } from "./renderer";
@@ -105,7 +105,8 @@ function Explorer({ data }: { data: EventData }) {
   const fullView: DayView = [meta.months[0]!.day, meta.months[lastMonth]!.day];
 
   const locationMenu = useMemo(() => buildLocationMenu(meta), [meta]);
-  const actorMenu = useMemo(() => buildListMenu(meta.actors, COPY.actor), [meta]);
+  const actorNames = useMemo(() => actorLabels(meta), [meta]);
+  const actorMenu = useMemo(() => buildListMenu(actorNames, COPY.actor), [actorNames]);
   const conflictMenu = useMemo(() => buildListMenu(meta.conflicts, COPY.conflict), [meta]);
   const typeMenu = useMemo(() => buildTypeMenu(), []);
   const picker = useMemo(() => new EventPicker(data), [data]);
@@ -336,7 +337,10 @@ function Explorer({ data }: { data: EventData }) {
 
   // A new filter zooms the map and the timeline to its events, and clearing every filter
   // zooms back out. The first render is the default view already.
+  // A new conflict or actor filter also sets the date range to the months its events
+  // span, so the subtitle and timeline show its timespan; clearing both resets it.
   const hasZoomed = useRef(false);
+  const lastPicked = useRef({ conflict: filters.conflict.id, actor: filters.actor.id });
   useEffect(() => {
     if (!hasZoomed.current) {
       hasZoomed.current = true;
@@ -346,6 +350,15 @@ function Explorer({ data }: { data: EventData }) {
     const bounds = isUnfiltered ? null : filteredBounds(data, filtered.visible, filtered.count);
     mapView.current?.fitTo(bounds);
     const days = isUnfiltered ? null : filteredDays(data, filtered.visible);
+
+    const { conflict, actor } = filters;
+    const isNewPick = conflict.id !== lastPicked.current.conflict || actor.id !== lastPicked.current.actor;
+    lastPicked.current = { conflict: conflict.id, actor: actor.id };
+    if (isNewPick) {
+      if (isAll(conflict) && isAll(actor)) setRange(fullRange);
+      else if (days) setRange([monthOf[days.from]!, monthOf[days.to - 1]! + 1]);
+    }
+
     if (!days) {
       setTimelineView(fullView);
       return;
@@ -356,8 +369,9 @@ function Explorer({ data }: { data: EventData }) {
     const middle = (days.from + days.to) / 2;
     const start = Math.min(Math.max(middle - span / 2, first), final - span);
     setTimelineView([start, start + span]);
-    // fullView is rebuilt each render but only changes with the data, so it isn't a dependency.
-  }, [data, filtered]);
+    // fullView, fullRange and filters are rebuilt each render, but filtered follows filters
+    // and the others only change with the data, so they aren't dependencies.
+  }, [data, filtered, monthOf]);
 
   useEffect(() => {
     mapView.current?.setPanEnabled(!isDrawingBox);
@@ -398,6 +412,8 @@ function Explorer({ data }: { data: EventData }) {
       <header className="header glass" ref={header}>
         <div className="title-block">
           <h1>{COPY.title}</h1>
+          {/* Follows the timeline's range as it's dragged. */}
+          <p className="subtitle">{COPY.dateRange(formatMonth(range[0]), formatMonth(range[1] - 1))}</p>
           <p className="summary">
             <strong>{eventCount}</strong> {COPY.events}
             <span className="summary-divider" aria-hidden="true">
@@ -525,8 +541,27 @@ function Explorer({ data }: { data: EventData }) {
             isRange={isRange}
             colorByType={colorByType}
             onShow={setShownEvent}
-            onSelectConflict={(id) => setConflict({ id, name: meta.conflicts[id]! })}
-            onSelectActor={(id) => setActor({ id, name: meta.actors[id]! })}
+            actorNames={actorNames}
+            activeConflict={isAll(conflict) ? null : conflict.id}
+            activeActor={isAll(actor) ? null : actor.id}
+            // A popup filters by one of its conflict and actors at a time, so turning one
+            // on turns the other kind off.
+            onToggleConflict={(id) => {
+              if (conflict.id === id) {
+                setConflict(conflictMenu[0]!.value!);
+                return;
+              }
+              setConflict({ id, name: meta.conflicts[id]! });
+              setActor(actorMenu[0]!.value!);
+            }}
+            onToggleActor={(id) => {
+              if (actor.id === id) {
+                setActor(actorMenu[0]!.value!);
+                return;
+              }
+              setActor({ id, name: actorNames[id]! });
+              setConflict(conflictMenu[0]!.value!);
+            }}
             onClose={closePopup}
           />
         )}

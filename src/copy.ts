@@ -1,7 +1,12 @@
+/** "the " before an actor named "Government of …", so a sentence reads "the Government of Iraq". */
+const theFor = (actor: string) => (actor.startsWith("Government of") ? "the " : "");
+
 /** Every piece of text the app shows or reads out, in one place. */
 export const COPY = {
-  pageTitle: "Global Conflict Fatalities",
-  title: "Global Conflict Fatalities: 1989-2026",
+  pageTitle: "Documented Conflict Fatalities",
+  title: "Documented Conflict Fatalities",
+  /** The subtitle under the title: the months the timeline covers, "Jan 1989–Oct 2026". */
+  dateRange: (from: string, to: string) => `${from}–${to}`,
   filters: {
     title: "Filter By",
     show: "Show filters",
@@ -12,6 +17,8 @@ export const COPY = {
     href: "https://ucdp.uu.se/",
   },
   clearFilter: (name: string) => `Clear ${name.toLowerCase()} filter`,
+  /** An actor named by an acronym, spelled out: "Islamic State (IS)". */
+  actorFullName: (full: string, acronym: string) => `${full} (${acronym})`,
   events: "events",
   fatalities: "fatalities",
   loading: "Loading conflict events",
@@ -108,9 +115,9 @@ export const COPY = {
     ) => [
       `This instance of ${type} was part of a `,
       link("conflict", "conflict"),
-      " between ",
+      ` between ${theFor(sideA)}`,
       link(sideA, "sideA"),
-      " and ",
+      ` and ${theFor(sideB)}`,
       link(sideB, "sideB"),
       ` and resulted in ${{ range: "an estimated ", estimate: "approximately ", exact: "" }[certainty]}${deaths} ${isOne ? "fatality" : "fatalities"}.`,
     ],
