@@ -2,6 +2,7 @@
 
 Reads   raw-data/GEDEvent_v26_1.csv          (final data, 1989-2025)
         raw-data/GEDEvent_v26_01_26_09.csv   (provisional candidate data, 2026)
+        raw-data/Actor_v26_1.csv             (actors' full names, for spelling out acronyms)
 Writes  public/data/events.bin, public/data/attrs.bin, public/data/details.bin,
         public/data/places.json, public/data/meta.json, public/data/sources/*.json
 
@@ -33,10 +34,12 @@ deaths_unknown]: UCDP's source citation and its best estimate split by who died,
 which adds up to the best. The app fetches one only when it shows an event from it.
 
 Events are sorted by start day. Ids index the lists in meta.json; division
-id 0 is a placeholder for "none".
+id 0 is a placeholder for "none". meta.json's actorFullNames runs beside actors,
+spelling out the actors named by an acronym, and is "" for the rest.
 """
 import json
 import math
+import re
 from pathlib import Path
 
 import numpy as np
@@ -45,6 +48,9 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "raw-data"
 OUT = ROOT / "public" / "data"
+ACTORS = RAW / "Actor_v26_1.csv"
+# A name in capitals, maybe with digits and joining marks: IS, PKK, M23, FDLR-FOCA, SPLM/A.
+ACRONYM = re.compile(r"^[A-Z0-9][A-Z0-9&./'-]*[A-Z][A-Z0-9&./'-]*$|^[A-Z][A-Z0-9&./'-]*[0-9]$")
 SOURCES = [
     (RAW / "GEDEvent_v26_1.csv", False),
     (RAW / "GEDEvent_v26_01_26_09.csv", True),
@@ -82,6 +88,41 @@ Y_MAX = float(equal_earth(np.array([0.0]), np.array([90.0]))[1][0])
 
 def scale(values: np.ndarray, extent: float) -> np.ndarray:
     return np.rint((values + extent) / (2 * extent) * 65535).astype("<u2")
+
+
+def clean_name(name) -> str:
+    if not isinstance(name, str):
+        return ""
+    # Some names break across lines after a hyphen: "Congo-\nKinshasa".
+    name = re.sub(r"-\s*\n\s*", "-", name.replace("’", "'"))
+    return " ".join(name.split())
+
+
+def actor_full_names(actors: list[str]) -> list[str]:
+    """Each actor's full English name where its name is an acronym, or "".
+
+    UCDP's NameOrigFullEng is the name an actor first had. For renamed actors, the full
+    name of the acronym in use is the matching one among NewName and NewNameFullEng:
+    IS is "Islamic State" there, not "The Monotheism and Jihad Group".
+    """
+    records = pd.read_csv(ACTORS, encoding="cp1252")
+    # A few names appear more than once; the newest row has the latest names.
+    records = records.drop_duplicates("NameData", keep="last").set_index("NameData")
+    full_names = []
+    for actor in actors:
+        full = ""
+        if ACRONYM.match(actor) and actor in records.index:
+            record = records.loc[actor]
+            full = clean_name(record["NameOrigFullEng"])
+            if record["NameChange"] == 1:
+                shorts = [clean_name(name) for name in str(record["NewName"]).split(",")]
+                fulls = [clean_name(name) for name in str(record["NewNameFullEng"]).split(",")]
+                if len(shorts) == len(fulls) and actor in shorts:
+                    full = fulls[shorts.index(actor)]
+        if full.lower() == "n/a" or full.casefold() == actor.casefold() or ACRONYM.match(full):
+            full = ""
+        full_names.append(full)
+    return full_names
 
 
 def ids_for(values: pd.Series) -> tuple[pd.Series, list[str]]:
@@ -206,6 +247,7 @@ def main():
             {"name": row.adm_2, "adm1": int(row.adm1_id)} for row in adm2_keys.itertuples()
         ],
         "actors": actors,
+        "actorFullNames": actor_full_names(actors),
         "conflicts": conflicts,
         "sourceChunk": SOURCE_CHUNK,
     }

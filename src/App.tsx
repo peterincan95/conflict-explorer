@@ -23,7 +23,7 @@ import {
   type LocationFilter,
 } from "./filters";
 import { Legend } from "./Legend";
-import { formatDeaths, formatToll, numberFormat } from "./format";
+import { actorLabels, formatDeaths, formatToll, numberFormat } from "./format";
 import { MapView } from "./mapView";
 import { EventPicker } from "./picking";
 import { DEFAULT_GRADIENT, DETAIL_LINE_ZOOM, EventRenderer, TYPE_COLORS } from "./renderer";
@@ -105,7 +105,8 @@ function Explorer({ data }: { data: EventData }) {
   const fullView: DayView = [meta.months[0]!.day, meta.months[lastMonth]!.day];
 
   const locationMenu = useMemo(() => buildLocationMenu(meta), [meta]);
-  const actorMenu = useMemo(() => buildListMenu(meta.actors, COPY.actor), [meta]);
+  const actorNames = useMemo(() => actorLabels(meta), [meta]);
+  const actorMenu = useMemo(() => buildListMenu(actorNames, COPY.actor), [actorNames]);
   const conflictMenu = useMemo(() => buildListMenu(meta.conflicts, COPY.conflict), [meta]);
   const typeMenu = useMemo(() => buildTypeMenu(), []);
   const picker = useMemo(() => new EventPicker(data), [data]);
@@ -525,8 +526,27 @@ function Explorer({ data }: { data: EventData }) {
             isRange={isRange}
             colorByType={colorByType}
             onShow={setShownEvent}
-            onSelectConflict={(id) => setConflict({ id, name: meta.conflicts[id]! })}
-            onSelectActor={(id) => setActor({ id, name: meta.actors[id]! })}
+            actorNames={actorNames}
+            activeConflict={isAll(conflict) ? null : conflict.id}
+            activeActor={isAll(actor) ? null : actor.id}
+            // A popup filters by one of its conflict and actors at a time, so turning one
+            // on turns the other kind off.
+            onToggleConflict={(id) => {
+              if (conflict.id === id) {
+                setConflict(conflictMenu[0]!.value!);
+                return;
+              }
+              setConflict({ id, name: meta.conflicts[id]! });
+              setActor(actorMenu[0]!.value!);
+            }}
+            onToggleActor={(id) => {
+              if (actor.id === id) {
+                setActor(actorMenu[0]!.value!);
+                return;
+              }
+              setActor({ id, name: actorNames[id]! });
+              setConflict(conflictMenu[0]!.value!);
+            }}
             onClose={closePopup}
           />
         )}
