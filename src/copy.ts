@@ -71,6 +71,8 @@ export const COPY = {
   },
   legend: {
     title: "Legend",
+    show: "Show legend",
+    hide: "Hide legend",
     types: { 1: "State-based conflict", 2: "Non-state conflict", 3: "Violence against civilians" },
     size: "Deaths per event",
   },
