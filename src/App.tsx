@@ -125,6 +125,7 @@ function Explorer({ data }: { data: EventData }) {
   const [isTimelineOpen, setIsTimelineOpen] = useState(true);
   // Filters start open, except on phones, where they'd cover much of the map.
   const [isFiltersOpen, setIsFiltersOpen] = useState(() => !window.matchMedia(PHONE_QUERY).matches);
+  const [isLegendOpen, setIsLegendOpen] = useState(() => !window.matchMedia(PHONE_QUERY).matches);
   const [announcement, setAnnouncement] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [details, setDetails] = useState<Details | null>(null);
@@ -142,7 +143,7 @@ function Explorer({ data }: { data: EventData }) {
   const mapPlot = useRef<HTMLDivElement>(null);
   const header = useRef<HTMLElement>(null);
   const timelineDock = useRef<HTMLDivElement>(null);
-  const filtersPanel = useRef<HTMLElement>(null);
+  const boxBar = useRef<HTMLDivElement>(null);
   const startHandle = useRef<HTMLDivElement>(null);
   const renderer = useRef<EventRenderer | null>(null);
   const mapView = useRef<MapView | null>(null);
@@ -265,11 +266,9 @@ function Explorer({ data }: { data: EventData }) {
     const updateLayout = () => {
       const plot = mapPlot.current!.getBoundingClientRect();
       const headerBox = header.current!.getBoundingClientRect();
-      const filtersBox = filtersPanel.current!.getBoundingClientRect();
-      // Where the filters drop below the header on narrow screens, the map starts below both.
-      const isStacked = filtersBox.top >= headerBox.bottom - 1;
-      const panelsBottom = isStacked ? Math.max(headerBox.bottom, filtersBox.bottom) : headerBox.bottom;
-      const top = panelsBottom - plot.top + PANEL_GAP;
+      // The map starts below the header. Beside it, or floating on the left on narrow
+      // screens, the filters panel doesn't push the map down.
+      const top = headerBox.bottom - plot.top + PANEL_GAP;
       const bottom = timelineDock.current!.getBoundingClientRect().top - plot.top - PANEL_GAP;
       current.setLayout(plot.width, plot.height);
       view.setLayout(plot.width, plot.height);
@@ -278,11 +277,14 @@ function Explorer({ data }: { data: EventData }) {
       stage.style.setProperty("--open-top", `${top}px`);
       stage.style.setProperty("--open-bottom", `${plot.height - bottom}px`);
       stage.parentElement!.style.setProperty("--header-bottom", `${headerBox.bottom - plot.top}px`);
+      // On narrow screens the filters sit just under the pills, which can wrap.
+      const pillsBottom = boxBar.current!.getBoundingClientRect().bottom - plot.top;
+      stage.parentElement!.style.setProperty("--pills-bottom", `${pillsBottom}px`);
     };
     const observer = new ResizeObserver(updateLayout);
     observer.observe(mapPlot.current!);
     observer.observe(header.current!);
-    observer.observe(filtersPanel.current!);
+    observer.observe(boxBar.current!);
     observer.observe(timelineDock.current!);
     updateLayout();
 
@@ -413,7 +415,6 @@ function Explorer({ data }: { data: EventData }) {
 
       <section
         className={isFiltersOpen ? "filters-panel glass" : "filters-panel glass collapsed"}
-        ref={filtersPanel}
         aria-label={COPY.filters.title}
       >
         <button
@@ -529,8 +530,13 @@ function Explorer({ data }: { data: EventData }) {
             onClose={closePopup}
           />
         )}
-        <Legend mapView={mapView} colorByType={colorByType} />
-        <div className="box-bar">
+        <Legend
+          mapView={mapView}
+          colorByType={colorByType}
+          isOpen={isLegendOpen}
+          onToggle={setIsLegendOpen}
+        />
+        <div className="box-bar" ref={boxBar}>
           <Settings
             fatalityMode={fatalityMode}
             onFatalityModeChange={setFatalityMode}
