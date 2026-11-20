@@ -361,6 +361,14 @@ body,
   white-space: nowrap;
 }
 
+.subtitle {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+
 .credit {
   margin: 0;
   color: var(--text-muted);
@@ -1521,6 +1529,10 @@ body,
 
   .header h1 {
     font-size: min(22px, 5.6vw);
+  }
+
+  .subtitle {
+    font-size: 15px;
   }
 
   .filters {
