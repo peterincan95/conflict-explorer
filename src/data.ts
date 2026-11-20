@@ -56,6 +56,8 @@ export interface Meta {
   /** Entry 0 is a placeholder for events with no second-level division. */
   adm2: { name: string; adm1: number }[];
   actors: string[];
+  /** Beside actors: the full name of each actor named by an acronym, or "". */
+  actorFullNames: string[];
   conflicts: string[];
   /** Events per source citation file. */
   sourceChunk: number;

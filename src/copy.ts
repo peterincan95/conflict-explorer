@@ -12,6 +12,8 @@ export const COPY = {
     href: "https://ucdp.uu.se/",
   },
   clearFilter: (name: string) => `Clear ${name.toLowerCase()} filter`,
+  /** An actor named by an acronym, spelled out: "Islamic State (IS)". */
+  actorFullName: (full: string, acronym: string) => `${full} (${acronym})`,
   events: "events",
   fatalities: "fatalities",
   loading: "Loading conflict events",

@@ -33,8 +33,14 @@ interface EventPopupProps {
   colorByType: boolean;
   /** Called with the event on show, to ring it on the map. */
   onShow: (index: number) => void;
-  onSelectConflict: (id: number) => void;
-  onSelectActor: (id: number) => void;
+  /** Actors' names for sentences, with acronyms spelled out. */
+  actorNames: string[];
+  /** The conflict and actor the map is filtered to, if any. */
+  activeConflict: number | null;
+  activeActor: number | null;
+  /** Filters the map to a conflict or actor, or clears that filter if it's on. */
+  onToggleConflict: (id: number) => void;
+  onToggleActor: (id: number) => void;
   onClose: () => void;
 }
 
@@ -48,8 +54,11 @@ export function EventPopup({
   isRange,
   colorByType,
   onShow,
-  onSelectConflict,
-  onSelectActor,
+  actorNames,
+  activeConflict,
+  activeActor,
+  onToggleConflict,
+  onToggleActor,
   onClose,
 }: EventPopupProps) {
   const [position, setPosition] = useState(0);
@@ -166,18 +175,31 @@ export function EventPopup({
   const summary = COPY.popup.summary(
     COPY.popup.types[typeOf(index)],
     (text, kind) => {
-      const select =
-        kind === "conflict"
-          ? () => onSelectConflict(attrs.conflict[index]!)
-          : () => onSelectActor(kind === "sideA" ? sideA : sideB);
+      // Each link toggles a filter to its conflict or actor; the one that's on shows red,
+      // with a filter icon.
+      const conflict = attrs.conflict[index]!;
+      const actor = kind === "sideA" ? sideA : sideB;
+      const isActive = kind === "conflict" ? activeConflict === conflict : activeActor === actor;
+      const toggle = kind === "conflict" ? () => onToggleConflict(conflict) : () => onToggleActor(actor);
       return (
-        <button key={kind} type="button" className="popup-link" onClick={select}>
+        <button
+          key={kind}
+          type="button"
+          className={isActive ? "popup-link active" : "popup-link"}
+          aria-pressed={isActive}
+          onClick={toggle}
+        >
           {text}
+          {isActive && (
+            <svg className="popup-filter-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M2 3h12l-4.75 5.5v4.75l-2.5-1.5V8.5z" />
+            </svg>
+          )}
         </button>
       );
     },
-    meta.actors[sideA]!,
-    meta.actors[sideB]!,
+    actorNames[sideA]!,
+    actorNames[sideB]!,
     formatToll(toll, isRange, numberFormat.format),
     certainty,
     isOne,

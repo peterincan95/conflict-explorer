@@ -1,3 +1,5 @@
+import { COPY } from "./copy";
+import type { Meta } from "./data";
 import type { Toll } from "./selection";
 
 export const numberFormat = new Intl.NumberFormat("en-US");
@@ -20,6 +22,14 @@ export function formatToll({ best, low, high }: Toll, isRange: boolean, format =
 const SETTLEMENT_KIND = / (village|town|hamlet)$/;
 
 /** "Al Fashir, Sudan": the place, capitalized, then its country unless the place names it. */
+/** Each actor's name for menus and sentences, with acronyms spelled out. */
+export function actorLabels({ actors, actorFullNames }: Meta) {
+  return actors.map((name, id) => {
+    const full = actorFullNames[id];
+    return full ? COPY.actorFullName(full, name) : name;
+  });
+}
+
 export function placeName(fullPlace: string | undefined, country: string) {
   const place = fullPlace?.replace(SETTLEMENT_KIND, "");
   if (!place) return country;
