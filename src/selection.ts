@@ -28,6 +28,11 @@ export interface Filters {
   type: ListFilter;
 }
 
+/** The menus' filters, and the events a conflict view keeps to (1 each), or null for all. */
+export interface Selection extends Filters {
+  scope: Uint8Array | null;
+}
+
 type Test = (index: number) => boolean;
 const always: Test = () => true;
 
@@ -62,8 +67,10 @@ function typeTest({ attrs }: EventData, { id }: ListFilter): Test {
 }
 
 /** Tests for every filter but `skip`, so a menu can count what each of its items would show. */
-function filterTests(data: EventData, filters: Filters, skip?: keyof Filters): Test[] {
-  const tests: [keyof Filters, Test][] = [
+function filterTests(data: EventData, filters: Selection, skip?: keyof Filters): Test[] {
+  const { scope } = filters;
+  const tests: [keyof Selection, Test][] = [
+    ["scope", scope ? (index) => scope[index] === 1 : always],
     ["location", locationTest(data, filters.location)],
     ["actor", actorTest(data, filters.actor)],
     ["conflict", conflictTest(data, filters.conflict)],
@@ -83,7 +90,7 @@ function areaTest({ x, y }: EventData, area: Area): Test {
 }
 
 /** 1 for each event that passes the location, actor, conflict and type filters. The GPU draws only these. */
-export function filterEvents(data: EventData, filters: Filters) {
+export function filterEvents(data: EventData, filters: Selection) {
   const tests = filterTests(data, filters);
   const visible = new Uint8Array(data.meta.count);
   let count = 0;
@@ -254,7 +261,7 @@ class Tally {
 export function countLocations(
   data: EventData,
   details: Details | null,
-  filters: Filters,
+  filters: Selection,
   area: Area,
   window: DayWindow,
 ): MenuCounts<LocationFilter> {
@@ -290,7 +297,7 @@ function readList(tally: Tally): MenuCounts<ListFilter> {
 export function countActors(
   data: EventData,
   details: Details | null,
-  filters: Filters,
+  filters: Selection,
   area: Area,
   window: DayWindow,
 ) {
@@ -309,7 +316,7 @@ export function countActors(
 export function countConflicts(
   data: EventData,
   details: Details | null,
-  filters: Filters,
+  filters: Selection,
   area: Area,
   window: DayWindow,
 ) {
@@ -326,7 +333,7 @@ export function countConflicts(
 export function countTypes(
   data: EventData,
   details: Details | null,
-  filters: Filters,
+  filters: Selection,
   area: Area,
   window: DayWindow,
 ) {

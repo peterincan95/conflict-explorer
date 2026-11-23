@@ -3,6 +3,7 @@ import { BoxOutline, useBoxDraw, type Box } from "./box";
 import { ColumnMenu } from "./ColumnMenu";
 import { COPY } from "./copy";
 import { EventPopup } from "./EventPopup";
+import { InfoPanel } from "./InfoPanel";
 import {
   loadDetails,
   loadEvents,
@@ -19,6 +20,7 @@ import {
   buildLocationMenu,
   buildTypeMenu,
   isAll,
+  scopeIds,
   type ListFilter,
   type LocationFilter,
 } from "./filters";
@@ -42,10 +44,19 @@ import {
   WHOLE_WORLD,
   type Area,
   type DayWindow,
-  type Filters,
   type MenuCounts,
+  type Selection,
 } from "./selection";
-import { MIN_VIEW_DAYS, Timeline, type ChartSeries, type DayView, type MonthRange } from "./Timeline";
+import {
+  MIN_VIEW_DAYS,
+  Timeline,
+  type ChartSeries,
+  type DayView,
+  type MonthRange,
+  type TimelineMarker,
+} from "./Timeline";
+import { ViewSelector } from "./ViewSelector";
+import { loadViews, projectView, type ConflictView, type ProjectedView } from "./views";
 
 const ANNOUNCE_DELAY_MS = 600;
 // Zooming the timeline to a filter leaves this share of its days either side.
@@ -71,6 +82,20 @@ export function App() {
     loadEvents(setProgress).then(setData, (reason: Error) => setError(reason.message));
   }, []);
 
+  const [views, setViews] = useState<ConflictView[]>([]);
+  // Open at launch, and kept here so switching maps doesn't bring it back.
+  const [isInfoOpen, setIsInfoOpen] = useState(true);
+  const [viewId, setViewId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!data) return;
+    loadViews().then(setViews, (reason: unknown) => console.warn("The conflict views didn't load", reason));
+  }, [data]);
+  // A conflict view reprojects the events onto its own map, once per visit.
+  const projected = useMemo(() => {
+    const view = views.find(({ id }) => id === viewId);
+    return data && view ? projectView(data, view) : null;
+  }, [data, views, viewId]);
+
   if (error) return <p className="status">{error}</p>;
   if (!data) {
     return (
@@ -79,7 +104,18 @@ export function App() {
       </p>
     );
   }
-  return <Explorer data={data} />;
+  // Each map starts afresh, with its own filters, dates and camera.
+  return (
+    <Explorer
+      key={projected?.view.id ?? "global"}
+      data={projected?.data ?? data}
+      projected={projected}
+      views={views}
+      onViewChange={setViewId}
+      isInfoOpen={isInfoOpen}
+      onInfoOpenChange={setIsInfoOpen}
+    />
+  );
 }
 
 /**
@@ -98,16 +134,37 @@ function lazyCounts<T>(count: () => MenuCounts<T>) {
   };
 }
 
-function Explorer({ data }: { data: EventData }) {
+// A conflict view's range always spans this many months.
+const VIEW_SPAN_MONTHS = 1;
+
+interface ExplorerProps {
+  data: EventData;
+  /** The conflict view showing, or null for the world map. */
+  projected: ProjectedView | null;
+  views: ConflictView[];
+  onViewChange: (id: string | null) => void;
+  isInfoOpen: boolean;
+  onInfoOpenChange: (isOpen: boolean) => void;
+}
+
+function Explorer({ data, projected, views, onViewChange, isInfoOpen, onInfoOpenChange }: ExplorerProps) {
   const { meta } = data;
   const lastMonth = meta.months.length - 1;
-  const fullRange: MonthRange = [0, lastMonth];
-  const fullView: DayView = [meta.months[0]!.day, meta.months[lastMonth]!.day];
+  // A conflict view locks the timeline to its months, and starts on the first.
+  const monthBounds: MonthRange = projected?.months ?? [0, lastMonth];
+  const fullRange: MonthRange = projected ? [monthBounds[0], monthBounds[0] + VIEW_SPAN_MONTHS] : monthBounds;
+  const fullView: DayView = [meta.months[monthBounds[0]]!.day, meta.months[monthBounds[1]]!.day];
+  const scope = projected?.scope ?? null;
+  const keyEvents = projected?.keyEvents;
 
-  const locationMenu = useMemo(() => buildLocationMenu(meta), [meta]);
+  const scoped = useMemo(() => (scope ? scopeIds(data, scope) : undefined), [data, scope]);
+  const locationMenu = useMemo(() => buildLocationMenu(meta, scoped), [meta, scoped]);
   const actorNames = useMemo(() => actorLabels(meta), [meta]);
-  const actorMenu = useMemo(() => buildListMenu(actorNames, COPY.actor), [actorNames]);
-  const conflictMenu = useMemo(() => buildListMenu(meta.conflicts, COPY.conflict), [meta]);
+  const actorMenu = useMemo(() => buildListMenu(actorNames, COPY.actor, scoped?.actors), [actorNames, scoped]);
+  const conflictMenu = useMemo(
+    () => buildListMenu(meta.conflicts, COPY.conflict, scoped?.conflicts),
+    [meta, scoped],
+  );
   const typeMenu = useMemo(() => buildTypeMenu(), []);
   const picker = useMemo(() => new EventPicker(data), [data]);
   const monthOf = useMemo(() => monthOfDay(meta), [meta]);
@@ -149,15 +206,15 @@ function Explorer({ data }: { data: EventData }) {
   const renderer = useRef<EventRenderer | null>(null);
   const mapView = useRef<MapView | null>(null);
 
-  const isFiltered = range[0] > 0 || range[1] < lastMonth;
+  const isFiltered = range[0] !== fullRange[0] || range[1] !== fullRange[1];
   const hasBox = area !== WHOLE_WORLD;
   const dayWindow: DayWindow = useMemo(
     () => ({ from: meta.months[range[0]]!.day, to: meta.months[range[1]]!.day }),
     [meta, range],
   );
-  const filters: Filters = useMemo(
-    () => ({ location, actor, conflict, type }),
-    [location, actor, conflict, type],
+  const filters: Selection = useMemo(
+    () => ({ location, actor, conflict, type, scope }),
+    [location, actor, conflict, type, scope],
   );
 
   // Ranges show once the low and high estimates have loaded.
@@ -218,7 +275,7 @@ function Explorer({ data }: { data: EventData }) {
       return;
     }
     renderer.current = current;
-    const view = new MapView(mapPlot.current!, linesCanvas.current!, current, meta.extent, setIsMapMoved);
+    const view = new MapView(mapPlot.current!, linesCanvas.current!, current, meta, setIsMapMoved);
     mapView.current = view;
     view.setPicking(picker, {
       onPick: (events, spot) => setPopup({ events, spot }),
@@ -233,24 +290,28 @@ function Explorer({ data }: { data: EventData }) {
     loadBasemap()
       .then((basemap) => {
         if (!isCurrent) return;
-        view.setBasemap(basemap);
+        view.setBasemap(projected ? projected.projectBasemap(basemap) : basemap);
+        // A conflict view draws the lines on its own map.
+        const setLines = (detail: "coarse" | "fine", lines: Awaited<ReturnType<typeof loadLines>>) => {
+          if (!isCurrent) return;
+          const { segments, counts } = projected ? projected.projectLines(lines.segments, lines.counts) : lines;
+          current.setLines(detail, segments, counts);
+        };
         loadLines("coarse", basemap)
-          .then(({ segments, counts }) => {
-            if (isCurrent) current.setLines("coarse", segments, counts);
-          })
+          .then((lines) => setLines("coarse", lines))
           .catch((reason: unknown) => console.warn("Map lines didn't load", reason));
         const loadFine = () => {
           stopWatchingZoom();
           loadLines("fine", basemap)
-            .then(({ segments, counts }) => {
-              if (isCurrent) current.setLines("fine", segments, counts);
-            })
+            .then((lines) => setLines("fine", lines))
             .catch((reason: unknown) => console.warn("Detailed map lines didn't load", reason));
         };
         // Starts a little early, so the lines are there by the time they're used.
         const needsFine = (zoom: number) => zoom >= DETAIL_LINE_ZOOM / 2;
         if (needsFine(view.zoom)) loadFine();
         else stopWatchingZoom = view.onZoom((zoom) => needsFine(zoom) && loadFine());
+        // Conflict views have no hillshade.
+        if (projected) return;
         return loadHillshade().then((image) => {
           if (isCurrent) current.setHillshade(image, basemap.hillshade.flat);
         });
@@ -299,7 +360,7 @@ function Explorer({ data }: { data: EventData }) {
       renderer.current = null;
       setPopup(null);
     };
-  }, [data, meta, picker]);
+  }, [data, meta, picker, projected]);
 
   useLayoutEffect(() => {
     renderer.current?.setVisible(filtered.visible);
@@ -335,6 +396,31 @@ function Explorer({ data }: { data: EventData }) {
   }, [data, index]);
   const closePopup = useCallback(() => setPopup(null), []);
 
+  // Key events in the dates get a ring on the map, and every one a dot on the timeline.
+  useEffect(() => {
+    const showing = (keyEvents ?? []).filter(
+      (event) => event.isOnMap && event.start < dayWindow.to && event.end >= dayWindow.from,
+    );
+    mapView.current?.setKeyEvents(showing);
+  }, [keyEvents, dayWindow]);
+  const markers: TimelineMarker[] | undefined = useMemo(
+    () =>
+      keyEvents?.map((event, index) => ({
+        key: String(index),
+        day: event.start,
+        name: event.name,
+        description: event.description,
+        isActive: event.start < dayWindow.to && event.end >= dayWindow.from,
+        onSelect: () => {
+          const first = monthOf[event.start] ?? monthBounds[0];
+          const month = Math.min(Math.max(first, monthBounds[0]), monthBounds[1] - VIEW_SPAN_MONTHS);
+          setRange([month, month + VIEW_SPAN_MONTHS]);
+        },
+      })),
+    // monthBounds is rebuilt each render, but only changes with the view, as keyEvents does.
+    [keyEvents, dayWindow, monthOf],
+  );
+
   // A new filter zooms the map and the timeline to its events, and clearing every filter
   // zooms back out. The first render is the default view already.
   // A new conflict or actor filter also sets the date range to the months its events
@@ -346,7 +432,7 @@ function Explorer({ data }: { data: EventData }) {
       hasZoomed.current = true;
       return;
     }
-    const isUnfiltered = Object.values(filters).every(isAll);
+    const isUnfiltered = [filters.location, filters.actor, filters.conflict, filters.type].every(isAll);
     const bounds = isUnfiltered ? null : filteredBounds(data, filtered.visible, filtered.count);
     mapView.current?.fitTo(bounds);
     const days = isUnfiltered ? null : filteredDays(data, filtered.visible);
@@ -354,7 +440,14 @@ function Explorer({ data }: { data: EventData }) {
     const { conflict, actor } = filters;
     const isNewPick = conflict.id !== lastPicked.current.conflict || actor.id !== lastPicked.current.actor;
     lastPicked.current = { conflict: conflict.id, actor: actor.id };
-    if (isNewPick) {
+    if (isNewPick && projected) {
+      // A conflict view's range keeps its span, and moves to where the pick starts.
+      if (!isAll(conflict) || !isAll(actor)) {
+        const first = days ? monthOf[days.from]! : monthBounds[0];
+        const month = Math.min(Math.max(first, monthBounds[0]), monthBounds[1] - VIEW_SPAN_MONTHS);
+        setRange([month, month + VIEW_SPAN_MONTHS]);
+      }
+    } else if (isNewPick) {
       if (isAll(conflict) && isAll(actor)) setRange(fullRange);
       else if (days) setRange([monthOf[days.from]!, monthOf[days.to - 1]! + 1]);
     }
@@ -364,9 +457,11 @@ function Explorer({ data }: { data: EventData }) {
       return;
     }
     const [first, final] = fullView;
-    const padding = (days.to - days.from) * VIEW_PADDING;
-    const span = Math.min(Math.max(days.to - days.from + 2 * padding, MIN_VIEW_DAYS), final - first);
-    const middle = (days.from + days.to) / 2;
+    const from = Math.max(days.from, first);
+    const to = Math.min(days.to, final);
+    const padding = (to - from) * VIEW_PADDING;
+    const span = Math.min(Math.max(to - from + 2 * padding, MIN_VIEW_DAYS), final - first);
+    const middle = (from + to) / 2;
     const start = Math.min(Math.max(middle - span / 2, first), final - span);
     setTimelineView([start, start + span]);
     // fullView, fullRange and filters are rebuilt each render, but filtered follows filters
@@ -577,7 +672,21 @@ function Explorer({ data }: { data: EventData }) {
             onFatalityModeChange={setFatalityMode}
             toggles={toggles}
             onTogglesChange={setToggles}
+            omit={projected ? ["hillshade"] : []}
           />
+          <button
+            type="button"
+            className="pill pill-icon"
+            aria-label={COPY.info.button}
+            title={COPY.info.button}
+            aria-haspopup="dialog"
+            onClick={() => onInfoOpenChange(true)}
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="8" cy="8" r="6.5" />
+              <path d="M8 7.2v4M8 4.9v.1" />
+            </svg>
+          </button>
           <button
             className="pill"
             type="button"
@@ -598,7 +707,12 @@ function Explorer({ data }: { data: EventData }) {
           )}
           {isDrawingBox && <p>{COPY.drawHint}</p>}
         </div>
+        {views.length > 0 && (
+          <ViewSelector views={views} current={projected?.view ?? null} onSelect={onViewChange} />
+        )}
       </section>
+
+      <InfoPanel isOpen={isInfoOpen} onClose={() => onInfoOpenChange(false)} />
 
       <div className="timeline-dock" ref={timelineDock}>
         <Timeline
@@ -615,6 +729,9 @@ function Explorer({ data }: { data: EventData }) {
           startHandle={startHandle}
           isOpen={isTimelineOpen}
           onToggle={setIsTimelineOpen}
+          bounds={projected ? monthBounds : undefined}
+          span={projected ? VIEW_SPAN_MONTHS : undefined}
+          markers={markers}
         />
       </div>
     </main>

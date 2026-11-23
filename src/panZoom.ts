@@ -16,8 +16,15 @@ interface Pointer {
   y: number;
 }
 
-export const isHome = ({ zoom, x, y }: Camera) =>
-  zoom === HOME.zoom && x === HOME.x && y === HOME.y;
+const isSame = (a: Camera, b: Camera) => a.zoom === b.zoom && a.x === b.x && a.y === b.y;
+
+/** Bounds for the camera's center, as shares of the data. */
+export interface CenterBounds {
+  west: number;
+  east: number;
+  south: number;
+  north: number;
+}
 
 const clamp = (value: number, low: number, high: number) =>
   Math.min(high, Math.max(low, value));
@@ -32,6 +39,9 @@ export class PanZoom {
   private height = 1;
   private fill: readonly [number, number] = [1, 1];
   private center: readonly [number, number] = [0.5, 0.5];
+  /** The furthest-out view, which the camera can't zoom out past. */
+  private home = HOME;
+  private centerBounds: CenterBounds | null = null;
   private isEnabled = true;
   private isLocked = false;
   private pointers = new Map<number, Pointer>();
@@ -60,21 +70,32 @@ export class PanZoom {
     this.plot.removeEventListener("pointercancel", this.onPointerEnd);
   }
 
+  get isHome() {
+    return isSame(this.camera, this.home);
+  }
+
   /**
-   * `fill` is how much of the plot's width and height the data covers at the home view,
-   * and `center` is the share of the plot across and down where the camera's center sits.
+   * `fill` is how much of the plot's width and height the data covers at zoom 1, and
+   * `center` is the share of the plot across and down where the camera's center sits.
+   * `home` is the furthest-out view, and `centerBounds` keeps the camera's center in a
+   * box rather than keeping the data's edges near the plot's. A camera at home stays there.
    */
   setLayout(
     width: number,
     height: number,
     fill: readonly [number, number],
     center: readonly [number, number] = [0.5, 0.5],
+    home: Camera = HOME,
+    centerBounds: CenterBounds | null = null,
   ) {
+    const wasHome = this.isHome;
     this.width = width;
     this.height = height;
     this.fill = fill;
     this.center = center;
-    this.moveTo(this.camera);
+    this.home = home;
+    this.centerBounds = centerBounds;
+    this.moveTo(wasHome ? home : this.camera);
   }
 
   /** Panning gives way to drawing a box. */
@@ -93,13 +114,18 @@ export class PanZoom {
 
   reset() {
     this.stopFlight();
-    this.moveTo(HOME);
+    this.moveTo(this.home);
+  }
+
+  /** Eases the camera back to its home view. */
+  flyHome() {
+    this.flyTo(this.home);
   }
 
   /** Eases the camera to a view. Zoom changes evenly in scale, so the move feels steady. */
   flyTo(target: Camera) {
     this.stopFlight();
-    const end = this.limited({ ...target, zoom: clamp(target.zoom, 1, this.maxZoom) });
+    const end = this.limited({ ...target, zoom: clamp(target.zoom, this.home.zoom, this.maxZoom) });
     const start = this.camera;
     if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
       this.moveTo(end);
@@ -143,6 +169,15 @@ export class PanZoom {
 
   /** Keeps the data in view: its edges can only move a little inside the plot's edges. */
   private limited({ zoom, x, y }: Camera): Camera {
+    const bounds = this.centerBounds;
+    if (bounds) {
+      const safe = (value: number, fallback: number) => (Number.isFinite(value) ? value : fallback);
+      return {
+        zoom,
+        x: clamp(safe(x, this.home.x), bounds.west, bounds.east),
+        y: clamp(safe(y, this.home.y), bounds.south, bounds.north),
+      };
+    }
     const limit = (center: number, fill: number) => {
       const halfView = Math.min(0.5 / (fill * zoom), 0.5);
       // A plot laid out at no size (in a hidden window, say) mustn't lose the camera for good.
@@ -159,7 +194,7 @@ export class PanZoom {
 
   /** Zooms while keeping the data under a point on the plot still. */
   private zoomAround(shareX: number, shareY: number, factor: number) {
-    const zoom = clamp(this.camera.zoom * factor, 1, this.maxZoom);
+    const zoom = clamp(this.camera.zoom * factor, this.home.zoom, this.maxZoom);
     const dataX = this.dataX(shareX);
     const dataY = this.dataY(shareY);
     this.moveTo({

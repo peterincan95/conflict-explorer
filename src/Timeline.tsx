@@ -72,6 +72,18 @@ interface Pan {
   startView: DayView;
 }
 
+/** A key event's dot on the track, which jumps the range to it when pressed. */
+export interface TimelineMarker {
+  key: string;
+  /** Days from the epoch. */
+  day: number;
+  name: string;
+  description: string;
+  /** Whether the event overlaps the range. */
+  isActive: boolean;
+  onSelect: () => void;
+}
+
 interface TimelineProps {
   /** Every month's start, plus one more for the end of the last month. */
   months: Month[];
@@ -90,6 +102,11 @@ interface TimelineProps {
   startHandle: RefObject<HTMLDivElement | null>;
   isOpen: boolean;
   onToggle: (isOpen: boolean) => void;
+  /** Months the range and track are kept within, as a conflict view sets; all of them otherwise. */
+  bounds?: MonthRange;
+  /** A fixed number of months the range spans, so the handles move together. */
+  span?: number;
+  markers?: TimelineMarker[];
 }
 
 const clamp = (value: number, low: number, high: number) => Math.min(Math.max(value, low), high);
@@ -142,6 +159,9 @@ export function Timeline({
   startHandle,
   isOpen,
   onToggle,
+  bounds,
+  span,
+  markers = [],
 }: TimelineProps) {
   const track = useRef<HTMLDivElement>(null);
   const drag = useRef<Drag | null>(null);
@@ -150,6 +170,7 @@ export function Timeline({
   const [trackWidth, setTrackWidth] = useState(1000);
   const lastMonth = months.length - 1;
   const days = useMemo(() => months.map(({ day }) => day), [months]);
+  const [low, high] = bounds ?? [0, lastMonth];
   const [viewFrom, viewTo] = view;
   const viewSpan = viewTo - viewFrom;
   const [from, to] = range;
@@ -158,13 +179,13 @@ export function Timeline({
   const shownShare = (month: number) => clamp(share(month), 0, 1);
   const percent = (month: number) => `${shownShare(month) * 100}%`;
   const inView = (month: number) => share(month) >= 0 && share(month) <= 1;
-  const isZoomed = viewFrom > days[0]! || viewTo < days[lastMonth]!;
+  const isZoomed = viewFrom > days[low]! || viewTo < days[high]!;
   const canReset = isFiltered || isZoomed;
   const bandMiddle = ((shownShare(from) + shownShare(to)) / 2) * 100;
 
   // The newest view and callback, for the wheel listener.
-  const latest = useRef({ view, onViewChange, days });
-  latest.current = { view, onViewChange, days };
+  const latest = useRef({ view, onViewChange, days, low, high });
+  latest.current = { view, onViewChange, days, low, high };
 
   useLayoutEffect(() => {
     const element = track.current;
@@ -180,10 +201,10 @@ export function Timeline({
     if (!element) return;
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
-      const { view: current, onViewChange: change, days: allDays } = latest.current;
+      const { view: current, onViewChange: change, days: allDays, low: lowest, high: highest } = latest.current;
       const [start, end] = current;
-      const first = allDays[0]!;
-      const final = allDays.at(-1)!;
+      const first = allDays[lowest]!;
+      const final = allDays[highest]!;
       const lineScale = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? LINE_HEIGHT_PIXELS : 1;
       const { left, width } = element.getBoundingClientRect();
       const span = end - start;
@@ -256,9 +277,10 @@ export function Timeline({
 
   const moved = (kind: DragKind, startRange: MonthRange, change: number): MonthRange => {
     const [startFrom, startTo] = startRange;
-    if (kind === "from") return [clamp(startFrom + change, 0, startTo - 1), startTo];
-    if (kind === "to") return [startFrom, clamp(startTo + change, startFrom + 1, lastMonth)];
-    const shift = clamp(change, -startFrom, lastMonth - startTo);
+    // A range of fixed span moves whole, whichever part is dragged.
+    if (kind === "from" && span === undefined) return [clamp(startFrom + change, low, startTo - 1), startTo];
+    if (kind === "to" && span === undefined) return [startFrom, clamp(startTo + change, startFrom + 1, high)];
+    const shift = clamp(change, low - startFrom, high - startTo);
     return [startFrom + shift, startTo + shift];
   };
 
@@ -315,8 +337,8 @@ export function Timeline({
       const width = track.current!.getBoundingClientRect().width;
       const shift = clamp(
         (-(event.clientX - startX) / width) * span,
-        days[0]! - startView[0],
-        days[lastMonth]! - startView[1],
+        days[low]! - startView[0],
+        days[high]! - startView[1],
       );
       onViewChange([startView[0] + shift, startView[1] + shift]);
       return;
@@ -349,8 +371,8 @@ export function Timeline({
       role="slider"
       tabIndex={0}
       aria-label={label}
-      aria-valuemin={kind === "from" ? 0 : from + 1}
-      aria-valuemax={kind === "from" ? to - 1 : lastMonth}
+      aria-valuemin={kind === "from" ? low : from + 1}
+      aria-valuemax={kind === "from" ? to - 1 : high}
       aria-valuenow={month}
       aria-valuetext={formatMonth(valueMonth)}
       onPointerDown={startDrag(kind)}
@@ -447,6 +469,24 @@ export function Timeline({
             {visibleYears.map((index) => (
               <div className="tick" key={index} style={{ left: percent(index) }} />
             ))}
+            {markers.map((marker) => {
+              const at = (marker.day - viewFrom) / viewSpan;
+              if (at < 0 || at > 1) return null;
+              return (
+                <button
+                  key={marker.key}
+                  type="button"
+                  className={marker.isActive ? "timeline-marker active" : "timeline-marker"}
+                  style={{ left: `${at * 100}%` }}
+                  aria-label={marker.name}
+                  aria-pressed={marker.isActive}
+                  title={`${marker.name}
+${marker.description}`}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={marker.onSelect}
+                />
+              );
+            })}
             {handle("from", from, COPY.timeline.start, from)}
             {handle("to", to, COPY.timeline.end, to - 1)}
           </div>

@@ -44,7 +44,7 @@ export interface Month {
 
 export interface Meta {
   count: number;
-  /** Equal Earth's extent, in projected units either side of zero. */
+  /** The map's extent, in projected units either side of zero: Equal Earth's, or a conflict view's. */
   extent: { xMax: number; yMax: number };
   epoch: string;
   /** Every month's start, plus one more for the end of the last month. */
@@ -61,6 +61,20 @@ export interface Meta {
   conflicts: string[];
   /** Events per source citation file. */
   sourceChunk: number;
+  /** Set in a conflict view, whose map is regional rather than the world. */
+  region?: MapRegion;
+}
+
+/**
+ * A conflict view's area, as shares of its map's extent, which it fits and won't zoom
+ * out past, and the world's extent, which keeps zooms comparable with the world map.
+ */
+export interface MapRegion {
+  west: number;
+  east: number;
+  south: number;
+  north: number;
+  world: { xMax: number; yMax: number };
 }
 
 /** Per-event attributes for filtering on the CPU. */
