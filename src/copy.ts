@@ -84,6 +84,37 @@ export const COPY = {
     size: "Deaths per event",
   },
 
+  /** The map picker at the bottom right. Placeholders to fill in, apart from "Global". */
+  views: {
+    global: "Global",
+    /** The tile's label for screen readers and its tooltip, given the map showing. */
+    change: (current: string) => `Lorem ipsum dolor: ${current}`,
+    /** The open list of other maps, for screen readers. */
+    choices: "Lorem ipsum dolor",
+  },
+
+  /** The panel open at launch: what the data is, then how to use the map. */
+  info: {
+    /** The pill that reopens the panel, for screen readers and its tooltip. */
+    button: "About this map",
+    title: "About this map",
+    close: "Close",
+    /** One or two sentences on the UCDP dataset. */
+    about:
+      "The Uppsala Conflict Data Program's Georeferenced Event Dataset records every documented instance of organized violence that killed at least one person since 1989. Each event is placed where and when it happened, with an estimate of how many people were killed.",
+    /** How to use the map, one bullet each. */
+    steps: [
+      "Scroll or pinch to zoom, and drag to pan. Each point is an event, sized by its death toll.",
+      "Zoom in and click a point to see what happened, who was involved and the source.",
+      "Drag the timeline's handles to choose dates, or drag the range between them to move through time.",
+      "Use Filter By to narrow events by location, actor, conflict or type of violence.",
+      "Use Box select to draw a box on the map and total the events inside it.",
+      "Use the Views menu at the bottom right to follow one war month by month, with its key events marked.",
+    ],
+    /** The button that closes the panel and starts exploring. */
+    start: "Start exploring",
+  },
+
   boxSelect: "Box select",
   clearBox: "Clear box",
   resetView: "Reset view",

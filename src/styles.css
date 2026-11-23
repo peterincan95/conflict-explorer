@@ -5,6 +5,9 @@
   --accent: #ff4d5b;
   /* The points' main red, matching DEFAULT_GRADIENT in renderer.ts. */
   --point-mid: #d0101f;
+  /* The country outlines in the map picker, and the globe on its tile. */
+  --view-icon: #e83341;
+  --view-icon-hover: #f26470;
   --text-muted: #b4b4b4;
   --divider: #262626;
   --menu: #2c2c2c;
@@ -1624,4 +1627,287 @@ body,
 .year-row .month-label {
   color: var(--minor-tick);
   font-size: 0.85em;
+}
+
+/* Key events on a conflict view's timeline: a dot at each start, which jumps the range there. */
+.timeline-marker {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+  transform: translate(-50%, -50%);
+}
+
+.timeline-marker::after {
+  position: absolute;
+  inset: 5px;
+  border-radius: 50%;
+  background: #f2f2f2;
+  box-shadow: 0 0 0 1.5px rgb(0 0 0 / 60%);
+  content: "";
+}
+
+.timeline-marker:hover::after,
+.timeline-marker:focus-visible::after,
+.timeline-marker.active::after {
+  inset: 3px;
+}
+
+.timeline-marker:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
+}
+
+/* The map picker at the map's bottom right, with the other maps opening to its left. */
+.view-selector {
+  position: absolute;
+  right: var(--panel-inset);
+  bottom: var(--open-bottom, 12px);
+  z-index: 2;
+}
+
+.view-tile,
+.view-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-end;
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.view-tile {
+  min-width: 92px;
+  height: 92px;
+  padding: 10px 12px 9px;
+}
+
+.view-tile:hover,
+.view-tile[aria-expanded="true"] {
+  border-color: rgb(235 235 235 / 75%);
+}
+
+.view-icon {
+  width: 64px;
+  height: 46px;
+  overflow: visible;
+}
+
+.country-icon path {
+  fill: var(--view-icon);
+}
+
+.globe-icon {
+  fill: none;
+  stroke: #8a8a8a;
+  stroke-width: 2;
+}
+
+.view-tile .globe-icon {
+  stroke: var(--view-icon);
+}
+
+.view-panel {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 16px);
+  display: flex;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--glass-stroke);
+  border-radius: 10px;
+  background: var(--glass-sheen), var(--glass-dense);
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  transform: translateY(-50%);
+}
+
+/* The panel's pointer, toward the tile. */
+.view-panel::after {
+  position: absolute;
+  top: 50%;
+  right: -8px;
+  width: 14px;
+  height: 14px;
+  border-top: 1px solid var(--glass-stroke);
+  border-right: 1px solid var(--glass-stroke);
+  background: rgb(26 26 26);
+  transform: translateY(-50%) rotate(45deg);
+  content: "";
+}
+
+.view-choice {
+  min-width: 92px;
+  height: 76px;
+  padding: 4px 10px 2px;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+}
+
+.view-choice:hover,
+.view-choice:focus-visible {
+  background: var(--menu-active);
+}
+
+.view-choice:hover .country-icon path {
+  fill: var(--view-icon-hover);
+}
+
+.view-choice:hover .globe-icon {
+  stroke: #b4b4b4;
+}
+
+/* On phones the other maps open above the tile, pointing down at it. */
+@media (max-width: 760px) {
+  .view-tile {
+    min-width: 72px;
+    height: 72px;
+    font-size: 13px;
+  }
+
+  .view-icon {
+    width: 48px;
+    height: 32px;
+  }
+
+  .view-panel {
+    top: auto;
+    right: 0;
+    bottom: calc(100% + 14px);
+    flex-wrap: wrap;
+    justify-content: center;
+    width: max-content;
+    max-width: calc(100vw - 2 * var(--panel-inset));
+    transform: none;
+  }
+
+  .view-panel::after {
+    top: auto;
+    right: 28px;
+    bottom: -8px;
+    transform: rotate(135deg);
+  }
+}
+
+/* The panel open at launch, over a dimmed map. */
+.info-panel {
+  width: min(520px, calc(100vw - 2 * var(--panel-inset)));
+  max-height: calc(100dvh - 2 * var(--panel-inset));
+  padding: 0;
+  overflow: auto;
+  border: 1px solid var(--glass-stroke);
+  border-radius: 10px;
+  color: var(--text-soft);
+  background: var(--glass-sheen), var(--glass-dense);
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+
+.info-panel::backdrop {
+  background: rgb(0 0 0 / 45%);
+}
+
+.info-content {
+  padding: 20px 24px 24px;
+}
+
+.info-head {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.info-head h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 26px;
+  line-height: 1.15;
+}
+
+.info-close {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin: -4px -8px 0 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--text-muted);
+  background: none;
+  cursor: pointer;
+}
+
+.info-close:hover,
+.info-close:focus-visible {
+  color: var(--text);
+  background: var(--menu-active);
+}
+
+.info-close svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+.info-about {
+  margin: 12px 0 0;
+  color: var(--text);
+  font-size: 17px;
+  line-height: 1.45;
+}
+
+.info-steps {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0 0;
+  padding: 16px 0 0 20px;
+  border-top: 1px solid var(--divider);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.info-steps li::marker {
+  color: var(--accent);
+}
+
+.info-start {
+  display: block;
+  min-height: 34px;
+  margin: 20px 0 0 auto;
+  padding: 0 20px;
+  border-radius: 17px;
+  color: var(--text);
+  font-size: 15px;
+}
+
+@media (max-width: 760px) {
+  .info-content {
+    padding: 16px 18px 18px;
+  }
+
+  .info-head h2 {
+    font-size: 22px;
+  }
+
+  .info-about {
+    font-size: 15px;
+  }
 }

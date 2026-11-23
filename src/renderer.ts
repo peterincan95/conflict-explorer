@@ -300,6 +300,8 @@ uniform float u_flat;
 // Screen to the world's share: world = (screen * 2 - 1 - offset) / scale.
 uniform vec4 u_projection;
 uniform vec2 u_extent;
+// 1 for a conflict view's map, a plain rectangle, rather than the world's outline.
+uniform float u_regional;
 uniform float u_nearGlow;
 uniform float u_farGlow;
 uniform float u_outsideDesaturation;
@@ -320,6 +322,7 @@ float noise(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.
 float insideMap(vec2 world) {
   float x = (world.x * 2.0 - 1.0) * u_extent.x;
   float y = (world.y * 2.0 - 1.0) * u_extent.y;
+  if (u_regional > 0.5) return min(u_extent.x - abs(x), u_extent.y - abs(y));
   float theta = clamp(y, -u_extent.y, u_extent.y) / ${A1};
   for (int step = 0; step < 6; step += 1) {
     float t2 = theta * theta;
@@ -404,14 +407,49 @@ export interface MapFrame {
 export interface MapLayout {
   fill: [number, number];
   center: [number, number];
+  /**
+   * The furthest out the camera zooms, and where it sits there. The world map's home is
+   * zoom 1 at its middle; a conflict view's fits its region, with zooms on the world
+   * map's scale, so points and labels size the same in both.
+   */
+  home: Camera;
+  /** The camera's center stays in this box, as shares of the map, or null for the world's usual limits. */
+  centerBounds: { west: number; east: number; south: number; north: number } | null;
+  /** How many of the map's widths the world spans: 1 for the world map. */
+  worldScale: number;
 }
 
-export function mapLayout(extent: Meta["extent"], width: number, height: number, frame: MapFrame | null): MapLayout {
+// A conflict view fits its region with this share of room around it.
+const REGION_PADDING = 1.04;
+
+export function mapLayout(
+  { extent, region }: Pick<Meta, "extent" | "region">,
+  width: number,
+  height: number,
+  frame: MapFrame | null,
+): MapLayout {
   const open = frame && frame.width > 0 && frame.height > 0 ? frame : { left: 0, top: 0, width, height };
-  const fill = mapFill(extent, open.width, open.height);
+  const fill = mapFill(region?.world ?? extent, open.width, open.height);
+  const worldFill: [number, number] = [(fill[0] * open.width) / width, (fill[1] * open.height) / height];
+  const center: [number, number] = [(open.left + open.width / 2) / width, (open.top + open.height / 2) / height];
+  if (!region) {
+    return { fill: worldFill, center, home: { zoom: 1, x: 0.5, y: 0.5 }, centerBounds: null, worldScale: 1 };
+  }
+  // The share of the panel the view's map would fill at zoom 1, at the world map's scale.
+  const scaled: [number, number] = [
+    (worldFill[0] * extent.xMax) / region.world.xMax,
+    (worldFill[1] * extent.yMax) / region.world.yMax,
+  ];
+  const zoom = Math.min(
+    open.width / width / (scaled[0] * (region.east - region.west) * REGION_PADDING),
+    open.height / height / (scaled[1] * (region.north - region.south) * REGION_PADDING),
+  );
   return {
-    fill: [(fill[0] * open.width) / width, (fill[1] * open.height) / height],
-    center: [(open.left + open.width / 2) / width, (open.top + open.height / 2) / height],
+    fill: scaled,
+    center,
+    home: { zoom, x: (region.west + region.east) / 2, y: (region.south + region.north) / 2 },
+    centerBounds: region,
+    worldScale: region.world.xMax / extent.xMax,
   };
 }
 
@@ -705,6 +743,7 @@ export class EventRenderer {
         "u_flat",
         "u_projection",
         "u_extent",
+        "u_regional",
         "u_colorByType",
         "u_typeColors",
       ]),
@@ -809,7 +848,7 @@ export class EventRenderer {
     gl.blendFunc(gl.ONE, gl.ONE);
 
     const { zoom, x, y } = this.camera;
-    const { fill, center } = mapLayout(this.data.meta.extent, this.width, this.height, this.openFrame);
+    const { fill, center } = mapLayout(this.data.meta, this.width, this.height, this.openFrame);
     const growth = zoomGrowth(zoom);
     const pointSize = Math.max(0.5, POINT_SIZE * growth * pixelRatio);
     const lightSize = Math.max(0.5, LIGHT_BASE_SIZE * growth * pixelRatio);
@@ -941,6 +980,7 @@ export class EventRenderer {
     gl.uniform4f(composite.uniforms.u_projection!, projection[0]!, projection[1]!, projection[2]!, projection[3]!);
     const { xMax, yMax } = this.data.meta.extent;
     gl.uniform2f(composite.uniforms.u_extent!, xMax, yMax);
+    gl.uniform1f(composite.uniforms.u_regional!, this.data.meta.region ? 1 : 0);
     gl.uniform1i(composite.uniforms.u_density!, 0);
     gl.uniform1i(composite.uniforms.u_near!, 1);
     gl.uniform1i(composite.uniforms.u_far!, 2);

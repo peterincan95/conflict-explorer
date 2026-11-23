@@ -48,3 +48,9 @@ Put the 1:50m Shaded Relief Basic raster (`PRISMA_SR_50M`) at `raw-data/revised-
 ```bash
 python scripts/build_basemap.py
 ```
+
+The conflict views come from `focus-events/<view>.csv`, one file of key events per view, with the columns `name`, `description`, `start_date`, `end_date`, `latitude` and `longitude` (dates as YYYY-MM-DD). Each view's map, months and which events it shows are set at the top of `scripts/build_views.py`, and its icon comes from the 10m Natural Earth countries and provinces. After editing either, rebuild `public/data/views.json`:
+
+```bash
+python scripts/build_views.py
+```

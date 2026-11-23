@@ -16,12 +16,14 @@ interface SettingsProps {
   onFatalityModeChange: (mode: FatalityMode) => void;
   toggles: MapToggles;
   onTogglesChange: (toggles: MapToggles) => void;
+  /** Options this map doesn't have, such as the hillshade in a conflict view. */
+  omit?: (keyof MapToggles)[];
 }
 
 const TOGGLE_ORDER: (keyof MapToggles)[] = ["colorByType", "hillshade", "places", "labels"];
 
 /** A gear button that opens the map's display options. */
-export function Settings({ fatalityMode, onFatalityModeChange, toggles, onTogglesChange }: SettingsProps) {
+export function Settings({ fatalityMode, onFatalityModeChange, toggles, onTogglesChange, omit = [] }: SettingsProps) {
   const [isOpen, setIsOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
@@ -89,7 +91,7 @@ export function Settings({ fatalityMode, onFatalityModeChange, toggles, onToggle
               ))}
             </div>
           </div>
-          {TOGGLE_ORDER.map((key) => (
+          {TOGGLE_ORDER.filter((key) => !omit.includes(key)).map((key) => (
             <button
               key={key}
               type="button"
