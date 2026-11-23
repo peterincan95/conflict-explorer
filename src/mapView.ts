@@ -1,6 +1,6 @@
 import type { Box } from "./box";
 import type { Basemap, MapLabel, Meta } from "./data";
-import { HOME, isHome, PanZoom } from "./panZoom";
+import { PanZoom } from "./panZoom";
 import type { EventPicker } from "./picking";
 import { MAP_MAX_ZOOM, mapLayout, pointWidth, type EventRenderer, type MapFrame } from "./renderer";
 import { GRID_MAX, WHOLE_WORLD, type Area } from "./selection";
@@ -58,6 +58,73 @@ const PLACE_STYLE: LabelStyle = {
 const PLACE_RING_RADIUS = 2.5;
 const PLACE_RING_COLOR = "#b4b4b4";
 const PLACE_NAME_OFFSET = 5;
+
+// Key events in a conflict view: a point on the spot, and a leader line out to the
+// event's name, with its description in small italics underneath.
+const KEY_NAME_STYLE: LabelStyle = {
+  font: '500 16px "Roboto Condensed", sans-serif',
+  color: "#f2f2f2",
+  letterSpacing: "0.2px",
+  lineHeight: 19,
+  uppercase: false,
+  wrapWidth: 200,
+};
+const KEY_DESCRIPTION_STYLE: LabelStyle = {
+  font: 'italic 400 12.5px "Roboto Condensed", sans-serif',
+  color: "#c4c4c4",
+  letterSpacing: "0px",
+  lineHeight: 15,
+  uppercase: false,
+  wrapWidth: 200,
+};
+const KEY_POINT_RADIUS = 3.5;
+// Leader lines rise one of these heights from the point, then run across to the text.
+const KEY_LEADER_RISES = [44, 84, 124];
+// Leader lines run one of these lengths across.
+const KEY_LEADER_RUNS = [72, 132];
+const KEY_TEXT_GAP = 8;
+// Points closer than this many CSS pixels share one leader, with their texts stacked.
+const KEY_MERGE_DISTANCE = 14;
+const KEY_DESCRIPTION_GAP = 2;
+const KEY_EVENT_SPACING = 8;
+const KEY_LINE = "rgb(255 255 255 / 92%)";
+const KEY_HALO = "rgb(0 0 0 / 55%)";
+// How much each problem counts against a placement; the lowest total wins.
+const KEY_OFF_SCREEN = 1000;
+const KEY_CROSSING = 100;
+const KEY_COVERS_POINT = 30;
+const KEY_COVERS_LABEL = 5;
+
+/** A key event to mark on the map, in grid units. */
+export interface MapKeyEvent {
+  name: string;
+  description: string;
+  x: number;
+  y: number;
+}
+
+/** A key event ready to draw: its name and description split into lines. */
+interface MeasuredKeyEvent {
+  event: MapKeyEvent;
+  name: string[];
+  description: string[];
+  /** The widest line, of the name alone and with the description. */
+  nameWidth: number;
+  width: number;
+}
+
+/** A thin box along a line, so lines can be checked against boxes and each other. */
+const lineBox = (x1: number, y1: number, x2: number, y2: number): ScreenBox => ({
+  left: Math.min(x1, x2) - 1,
+  right: Math.max(x1, x2) + 1,
+  top: Math.min(y1, y2) - 1,
+  bottom: Math.max(y1, y2) + 1,
+});
+
+const countOverlaps = (box: ScreenBox, others: ScreenBox[]) =>
+  others.filter(
+    (other) => box.left < other.right && box.right > other.left && box.top < other.bottom && box.bottom > other.top,
+  ).length;
 
 /** A label ready to draw: its name split into lines, and the widest line's width. */
 interface MeasuredLabel {
@@ -126,6 +193,8 @@ export class MapView {
   private fill: [number, number] = [1, 1];
   /** Where the camera's center sits, as a share of the panel across and down. */
   private center: [number, number] = [0.5, 0.5];
+  /** How many of the map's widths the world spans, for web map zooms. */
+  private worldScale = 1;
   private openFrame: MapFrame | null = null;
   private pixelRatio = 1;
   private area = WHOLE_WORLD;
@@ -139,6 +208,8 @@ export class MapView {
   private showLabels = true;
   private showPlaces = true;
   private highlight: Highlight | null = null;
+  private keyEventSource: MapKeyEvent[] = [];
+  private keyEvents: MeasuredKeyEvent[] = [];
   private hovered: Highlight | null = null;
   private zoomListeners = new Set<(zoom: number) => void>();
   private moveListeners = new Set<() => void>();
@@ -151,14 +222,14 @@ export class MapView {
     private plot: HTMLElement,
     private canvas: HTMLCanvasElement,
     private renderer: EventRenderer,
-    private extent: Meta["extent"],
+    private meta: Pick<Meta, "extent" | "region">,
     onMovedChange: (isMoved: boolean) => void,
   ) {
     this.context = canvas.getContext("2d")!;
     this.view = new PanZoom(plot, -1, MAP_MAX_ZOOM, (camera) => {
       renderer.setCamera(camera);
       this.requestDraw();
-      onMovedChange(!isHome(camera));
+      onMovedChange(!this.view.isHome);
       this.zoomListeners.forEach((listener) => listener(camera.zoom));
       this.moveListeners.forEach((listener) => listener());
       // The map moved under a still pointer, so what it points at may have changed.
@@ -203,7 +274,7 @@ export class MapView {
 
   /** The web map zoom the map is at, which doesn't depend on the screen's size. */
   get webZoom() {
-    return Math.log2((this.width * this.fill[0] * this.view.camera.zoom) / WEB_TILE_PIXELS);
+    return Math.log2((this.width * this.fill[0] * this.view.camera.zoom * this.worldScale) / WEB_TILE_PIXELS);
   }
 
   /** Where a spot in grid units sits on screen, in CSS pixels from the map's top left. */
@@ -295,8 +366,34 @@ export class MapView {
     this.requestDraw();
   }
 
+  /** Marks key events, with leader lines to their names and descriptions. */
+  setKeyEvents(events: MapKeyEvent[]) {
+    this.keyEventSource = events;
+    this.measureKeyEvents();
+    this.requestDraw();
+  }
+
+  private measureKeyEvents() {
+    const events = this.keyEventSource;
+    const asLabels = (text: (event: MapKeyEvent) => string) =>
+      events.map((event) => ({ name: text(event), x: 0, y: 0, minZoom: 0 }));
+    const names = this.measure(asLabels(({ name }) => name), KEY_NAME_STYLE);
+    const descriptions = this.measure(asLabels(({ description }) => description), KEY_DESCRIPTION_STYLE);
+    this.keyEvents = events.map((event, index) => {
+      const description = event.description ? descriptions[index]! : { lines: [], width: 0 };
+      return {
+        event,
+        name: names[index]!.lines,
+        description: description.lines,
+        nameWidth: names[index]!.width,
+        width: Math.max(names[index]!.width, description.width),
+      };
+    });
+  }
+
   private measureLabels() {
     const { basemap } = this;
+    this.measureKeyEvents();
     if (!basemap) return;
     this.countries = this.measure(basemap.countries, COUNTRY_STYLE);
     this.provinces = this.measure(basemap.provinces, PROVINCE_STYLE);
@@ -363,10 +460,16 @@ export class MapView {
   }
 
   private updateLayout() {
-    const { fill, center } = mapLayout(this.extent, this.width, this.height, this.openFrame);
+    const { fill, center, home, centerBounds, worldScale } = mapLayout(
+      this.meta,
+      this.width,
+      this.height,
+      this.openFrame,
+    );
     this.fill = fill;
     this.center = center;
-    this.view.setLayout(this.width, this.height, fill, center);
+    this.worldScale = worldScale;
+    this.view.setLayout(this.width, this.height, fill, center, home, centerBounds);
     this.requestDraw();
   }
 
@@ -389,7 +492,7 @@ export class MapView {
   /** Flies to show an area, in grid units, or back to the whole map. */
   fitTo(area: Area | null) {
     if (!area) {
-      this.view.flyTo(HOME);
+      this.view.flyHome();
       return;
     }
     const { fill, width, height } = this;
@@ -444,8 +547,12 @@ export class MapView {
    * Countries first, then places, then provinces, each most important first, skipping
    * any label that would overlap one already placed.
    */
-  private drawLabels(toScreenX: (x: number) => number, toScreenY: (y: number) => number, zoom: number) {
-    const placed: ScreenBox[] = [];
+  private drawLabels(
+    toScreenX: (x: number) => number,
+    toScreenY: (y: number) => number,
+    zoom: number,
+    placed: ScreenBox[],
+  ) {
     const { context } = this;
     context.lineJoin = "round";
     context.lineWidth = 3;
@@ -506,6 +613,180 @@ export class MapView {
     }
   }
 
+  /**
+   * Marks each key event with a point and a leader line out to its name and description.
+   * Each placement tries the side away from the other events first, then the others,
+   * at a few heights, and takes the first with no problems, else the one with fewest:
+   * off screen, lines crossing, text over another point or label. The texts and lines go
+   * into `placed`, so map labels keep clear of them.
+   */
+  private drawKeyEvents(toScreenX: (x: number) => number, toScreenY: (y: number) => number, placed: ScreenBox[]) {
+    const { context } = this;
+    if (this.keyEvents.length === 0) return;
+    const open = this.openArea;
+
+    // Events on almost the same spot share a point and a leader, with their texts stacked.
+    const groups: { x: number; y: number; members: MeasuredKeyEvent[] }[] = [];
+    for (const member of this.keyEvents) {
+      const x = toScreenX(member.event.x / GRID_MAX);
+      const y = toScreenY(member.event.y / GRID_MAX);
+      const near = groups.find((group) => Math.hypot(group.x - x, group.y - y) < KEY_MERGE_DISTANCE);
+      if (!near) {
+        groups.push({ x, y, members: [member] });
+        continue;
+      }
+      near.x = (near.x * near.members.length + x) / (near.members.length + 1);
+      near.y = (near.y * near.members.length + y) / (near.members.length + 1);
+      near.members.push(member);
+    }
+    const shown = groups.filter(
+      ({ x, y }) => x >= open.left && x <= open.left + open.width && y >= open.top && y <= open.top + open.height,
+    );
+    if (shown.length === 0) return;
+    const middleX = shown.reduce((sum, group) => sum + group.x, 0) / shown.length;
+    const middleY = shown.reduce((sum, group) => sum + group.y, 0) / shown.length;
+    const points = shown.map(({ x, y }) => ({
+      left: x - KEY_POINT_RADIUS - 2,
+      right: x + KEY_POINT_RADIUS + 2,
+      top: y - KEY_POINT_RADIUS - 2,
+      bottom: y + KEY_POINT_RADIUS + 2,
+    }));
+    const texts: ScreenBox[] = [];
+    const leaders: ScreenBox[] = [];
+    // Groups nearest the middle go first, as they have the least room.
+    const order = shown
+      .map((group, index) => ({ group, index }))
+      .sort(
+        (a, b) =>
+          Math.hypot(a.group.x - middleX, a.group.y - middleY) - Math.hypot(b.group.x - middleX, b.group.y - middleY),
+      );
+
+    for (const { group, index } of order) {
+      const { x, y, members } = group;
+      const otherPoints = points.filter((_, pointIndex) => pointIndex !== index);
+      const across = shown.length > 1 && x < middleX ? -1 : 1;
+      const down = shown.length > 1 && y > middleY + KEY_LEADER_RISES[0]! ? 1 : -1;
+      const sides = [
+        [across, down],
+        [-across, down],
+        [across, -down],
+        [-across, -down],
+      ] as const;
+
+      /** The best placement for the text, with or without the descriptions. */
+      const place = (withDescriptions: boolean) => {
+        // Each line's offset from the top of the text, and its style.
+        const lines: { text: string; top: number; style: LabelStyle }[] = [];
+        let textHeight = 0;
+        members.forEach((member, memberIndex) => {
+          if (memberIndex > 0) textHeight += KEY_EVENT_SPACING;
+          for (const text of member.name) {
+            lines.push({ text, top: textHeight, style: KEY_NAME_STYLE });
+            textHeight += KEY_NAME_STYLE.lineHeight;
+          }
+          if (!withDescriptions || member.description.length === 0) return;
+          textHeight += KEY_DESCRIPTION_GAP;
+          for (const text of member.description) {
+            lines.push({ text, top: textHeight, style: KEY_DESCRIPTION_STYLE });
+            textHeight += KEY_DESCRIPTION_STYLE.lineHeight;
+          }
+        });
+        const textWidth = Math.max(...members.map((member) => (withDescriptions ? member.width : member.nameWidth)));
+        // The name's first line sits level with the leader's end, the rest below it, unless
+        // the text is too tall to fit that way, when it can sit centered on the end or above it.
+        const anchors = [KEY_NAME_STYLE.lineHeight / 2, textHeight / 2, textHeight - KEY_NAME_STYLE.lineHeight / 2];
+        let best: {
+          score: number;
+          turnY: number;
+          endX: number;
+          textLeft: number;
+          textTop: number;
+          down: number;
+          text: ScreenBox;
+          leaders: ScreenBox[];
+        } | null = null;
+        for (const [sideAcross, sideDown] of sides) {
+          for (const anchor of anchors) {
+            for (const run of KEY_LEADER_RUNS) {
+              for (const rise of KEY_LEADER_RISES) {
+                const turnY = y + sideDown * rise;
+                const endX = x + sideAcross * run;
+                const textLeft = sideAcross > 0 ? endX + KEY_TEXT_GAP : endX - KEY_TEXT_GAP - textWidth;
+                const textTop = turnY - anchor;
+                const text = {
+                  left: textLeft - LABEL_GAP,
+                  right: textLeft + textWidth + LABEL_GAP,
+                  top: textTop - LABEL_GAP,
+                  bottom: textTop + textHeight + LABEL_GAP,
+                };
+                const lineBoxes = [lineBox(x, y + sideDown * KEY_POINT_RADIUS, x, turnY), lineBox(x, turnY, endX, turnY)];
+                const isOnScreen =
+                  text.left >= open.left &&
+                  text.right <= open.left + open.width &&
+                  text.top >= open.top &&
+                  text.bottom <= open.top + open.height;
+                let score = isOnScreen ? 0 : KEY_OFF_SCREEN;
+                score += KEY_CROSSING * countOverlaps(text, [...texts, ...leaders]);
+                for (const box of lineBoxes) score += KEY_CROSSING * countOverlaps(box, [...texts, ...leaders]);
+                for (const box of [text, ...lineBoxes]) score += KEY_COVERS_POINT * countOverlaps(box, otherPoints);
+                score += KEY_COVERS_LABEL * countOverlaps(text, placed);
+                if (!best || score < best.score) {
+                  best = { score, turnY, endX, textLeft, textTop, down: sideDown, text, leaders: lineBoxes };
+                }
+                if (score === 0) return { ...best, lines };
+              }
+            }
+          }
+        }
+        return { ...best!, lines };
+      };
+      // Text that can't be placed cleanly, as in a crowded month or a small window, leaves
+      // out the descriptions if that helps.
+      let layout = place(true);
+      if (layout.score > 0) {
+        const namesOnly = place(false);
+        if (namesOnly.score < layout.score) layout = namesOnly;
+      }
+      const { lines } = layout;
+      texts.push(layout.text);
+      leaders.push(...layout.leaders);
+      placed.push(layout.text, ...layout.leaders);
+
+      const path = new Path2D();
+      path.moveTo(x, y + layout.down * KEY_POINT_RADIUS);
+      path.lineTo(x, layout.turnY);
+      path.lineTo(layout.endX, layout.turnY);
+      context.lineJoin = "round";
+      context.lineWidth = 4;
+      context.strokeStyle = KEY_HALO;
+      context.stroke(path);
+      context.lineWidth = 1.5;
+      context.strokeStyle = KEY_LINE;
+      context.stroke(path);
+
+      context.beginPath();
+      context.arc(x, y, KEY_POINT_RADIUS, 0, Math.PI * 2);
+      context.lineWidth = 3;
+      context.strokeStyle = KEY_HALO;
+      context.stroke();
+      context.fillStyle = KEY_LINE;
+      context.fill();
+
+      context.textAlign = "left";
+      context.textBaseline = "middle";
+      context.lineWidth = 3;
+      context.strokeStyle = LABEL_HALO;
+      for (const { text, top, style } of lines) {
+        this.applyStyle(style);
+        context.fillStyle = style.color;
+        const lineY = layout.textTop + top + style.lineHeight / 2;
+        context.strokeText(text, layout.textLeft, lineY);
+        context.fillText(text, layout.textLeft, lineY);
+      }
+    }
+    context.letterSpacing = "0px";
+  }
+
   /** The area under a box drawn on the map. */
   boxToArea({ left, right, top, bottom }: Box): Area {
     const toGrid = (share: number) => Math.round(clamp(share, 0, 1) * GRID_MAX);
@@ -535,9 +816,11 @@ export class MapView {
     const [centerX, centerY] = this.center;
     const toScreenX = (x: number) => width * centerX + (x - camera.x) * width * fill[0] * camera.zoom;
     const toScreenY = (y: number) => height * centerY - (y - camera.y) * height * fill[1] * camera.zoom;
-    const webZoom = Math.log2((width * fill[0] * camera.zoom) / WEB_TILE_PIXELS);
+    const webZoom = this.webZoom;
     const labelZoom = Math.min(webZoom + LABEL_ZOOM_BIAS, HOME_LABEL_ZOOM + Math.log2(camera.zoom));
-    this.drawLabels(toScreenX, toScreenY, labelZoom);
+    const placed: ScreenBox[] = [];
+    this.drawKeyEvents(toScreenX, toScreenY, placed);
+    this.drawLabels(toScreenX, toScreenY, labelZoom, placed);
     this.drawHighlight(this.highlight, toScreenX, toScreenY, camera.zoom);
     this.drawHighlight(this.hovered, toScreenX, toScreenY, camera.zoom);
     if (area === WHOLE_WORLD) return;
