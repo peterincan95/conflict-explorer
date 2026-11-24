@@ -5,9 +5,8 @@
   --accent: #ff4d5b;
   /* The points' main red, matching DEFAULT_GRADIENT in renderer.ts. */
   --point-mid: #d0101f;
-  /* The country outlines in the map picker, and the globe on its tile. */
+  /* The map picker's icon for the map showing. */
   --view-icon: #e83341;
-  --view-icon-hover: #f26470;
   --text-muted: #b4b4b4;
   --divider: #262626;
   --menu: #2c2c2c;
@@ -1703,13 +1702,18 @@ body,
 }
 
 .country-icon path {
-  fill: var(--view-icon);
+  fill: #8a8a8a;
 }
 
 .globe-icon {
   fill: none;
   stroke: #8a8a8a;
   stroke-width: 2;
+}
+
+/* The map showing, on the tile, is red; the others in the panel are gray. */
+.view-tile .country-icon path {
+  fill: var(--view-icon);
 }
 
 .view-tile .globe-icon {
@@ -1761,7 +1765,7 @@ body,
 }
 
 .view-choice:hover .country-icon path {
-  fill: var(--view-icon-hover);
+  fill: #b4b4b4;
 }
 
 .view-choice:hover .globe-icon {
